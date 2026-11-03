@@ -373,9 +373,8 @@ with tab1:
         with col_chk:
             force_new_task = st.checkbox("Tạo task mới từ đầu", value=False, help="Bỏ qua các checkpoint audio và ảnh đã sinh trước đó để render lại từ đầu.")
 
-        is_rendering = st.session_state.get("is_rendering", False)
         with col_btn:
-            render_clicked = st.button("🚀 3. Bắt Đầu Sản Xuất Video (Render)", disabled=is_rendering)
+            render_clicked = st.button("🚀 3. Bắt Đầu Sản Xuất Video (Render)")
 
         if render_clicked:
             st.session_state["is_rendering"] = True
