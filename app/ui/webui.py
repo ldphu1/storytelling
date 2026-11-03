@@ -70,6 +70,15 @@ with st.sidebar:
         llm_api_key = ""
         llm_model = "mock"
         llm_base_url = ""
+    elif clean_provider == "ollama":
+        st.info("🦙 Ollama: Chạy mô hình mã nguồn mở (Local hoặc Remote trên Kaggle GPU 1).")
+        llm_api_key = "ollama"
+        llm_base_url = st.text_input(
+            "Ollama Base URL",
+            value="http://localhost:11434/v1",
+            help="Nếu chạy trên Kaggle, dán đường link Cloudflare Tunnel vào đây kèm đuôi /v1 (ví dụ: https://...trycloudflare.com/v1)"
+        )
+        llm_model = st.text_input("Tên Model", value="qwen2.5:7b", help="Model khuyến nghị: qwen2.5:7b hoặc qwen2.5:14b")
     else:
         if clean_provider == "gemini":
             default_base = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -79,10 +88,6 @@ with st.sidebar:
             default_base = "https://api.deepseek.com/v1"
             default_model = "deepseek-chat"
             key_help = "Nhập DeepSeek API Key (sk-...)"
-        elif clean_provider == "ollama":
-            default_base = "http://localhost:11434/v1"
-            default_model = "qwen2.5"
-            key_help = "Ollama chạy local, không cần key"
         else:
             default_base = "https://api.openai.com/v1"
             default_model = "gpt-4o-mini"
