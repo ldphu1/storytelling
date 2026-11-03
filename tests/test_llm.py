@@ -11,13 +11,20 @@ def test_generate_mock_story_scenes():
     assert isinstance(result, StoryScriptResponse)
     assert len(result.scenes) == 5
     assert result.scenes[0].scene_id == 1
+    # Check that dynamic characters with concept are returned
+    assert len(result.characters) >= 1
+    for char in result.characters:
+        assert char.concept != ""
+        assert char.appearance_prompt != ""
+        assert char.default_outfit != ""
     # Check that at least one scene is B-Roll (has_character == False)
     broll_scenes = [s for s in result.scenes if not s.has_character]
     assert len(broll_scenes) >= 1
-    # Check that character scenes reference existing characters
+    # Check that character scenes reference characters in script or fallback
     char_scenes = [s for s in result.scenes if s.has_character]
+    char_ids = {c.id for c in result.characters} | {"char_minh", "char_linh"}
     for s in char_scenes:
-        assert s.character_id in ["char_minh", "char_linh"]
+        assert s.character_id in char_ids
 
 def test_generate_story_scenes_with_mocked_llm_response():
     mock_response_data = {
