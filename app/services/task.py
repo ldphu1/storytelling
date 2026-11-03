@@ -1,0 +1,113 @@
+import json
+import time
+import uuid
+import asyncio
+from pathlib import Path
+from typing import Optional, Callable, Dict, Any, List
+from loguru import logger
+
+from app.config import AppConfig, get_config
+from app.models.schema import StoryScriptResponse, CharacterBible
+from app.services.llm import generate_story_scenes
+from app.services.voice import synthesize_scenes_audio_and_subtitles
+from app.services.comfy_remote_client import DualGPUComfyStoryClient
+from app.services.video import assemble_final_story_video_nvenc
+
+def run_story_pipeline(
+    topic: str,
+    config: Optional[AppConfig] = None,
+    custom_script: Optional[StoryScriptResponse] = None,
+    progress_callback: Optional[Callable[[str, float], None]] = None,
+    dry_run: bool = False,
+    bgm_path: Optional[Path] = None,
+    aspect_ratio: str = "16:9",
+    character_bible_path: str = "resource/character_bible/characters.json",
+    workflow_path: str = "resource/workflows/pulid_ipadapter_api.json",
+    tts_backend: Optional[Callable[[str, str, Path], None]] = None,
+    voice_override: Optional[str] = None
+) -> Path:
+    """
+    Hàm điều phối toàn bộ quy trình sản xuất video kể chuyện AI Scene-by-Scene:
+    1. Sinh kịch bản JSON qua LLM
+    2. Tổng hợp giọng đọc TTS và ghép phụ đề đồng bộ
+    3. Sinh ảnh qua ComfyUI Dual-GPU và chuyển động camera NVENC
+    4. Đóng gói video thành phẩm kèm Audio Ducking
+    """
+    cfg = config or get_config()
+    task_id = f"task_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    task_dir = cfg.get_task_dir(task_id)
+
+    def report(msg: str, progress: float):
+        logger.info(f"[{progress*100:.0f}%] {msg}")
+        if progress_callback:
+            progress_callback(msg, progress)
+
+    report("Khởi tạo phiên làm việc...", 0.05)
+
+    # 1. Kịch bản phân cảnh
+    script_file = task_dir / "story_script.json"
+    if custom_script:
+        story_script = custom_script
+    elif script_file.exists():
+        with open(script_file, "r", encoding="utf-8") as f:
+            story_script = StoryScriptResponse(**json.load(f))
+    else:
+        report("Đang sinh kịch bản phân cảnh từ LLM...", 0.15)
+        story_script = generate_story_scenes(
+            topic=topic,
+            character_bible_path=character_bible_path,
+            provider=cfg.llm_provider,
+            api_key=cfg.llm_api_key,
+            base_url=cfg.llm_base_url,
+            model=cfg.llm_model
+        )
+
+    # Lưu lại kịch bản để phục vụ checkpoint
+    script_file.write_text(story_script.model_dump_json(indent=2), encoding="utf-8")
+    report(f"Đã xác nhận kịch bản ({len(story_script.scenes)} phân cảnh)", 0.25)
+
+    # 2. Âm thanh & Phụ đề
+    bible = CharacterBible.from_json_file(Path(character_bible_path))
+    report("Đang tổng hợp giọng đọc phân cảnh và đồng bộ phụ đề...", 0.35)
+    master_audio, master_srt, durations = synthesize_scenes_audio_and_subtitles(
+        scenes=story_script.scenes,
+        task_dir=task_dir,
+        bible=bible,
+        voice_override=voice_override,
+        tts_backend=tts_backend
+    )
+    report("Hoàn thành audio và phụ đề", 0.50)
+
+    # 3. Kết xuất hình ảnh và chuyển động camera (ComfyUI + NVENC)
+    report("Đang kết xuất hình ảnh và hiệu ứng camera phân cảnh...", 0.60)
+    comfy_client = DualGPUComfyStoryClient(
+        worker_urls=cfg.worker_urls,
+        workflow_path=workflow_path,
+        bible_path=character_bible_path
+    )
+
+    scenes_dict = [sc.model_dump() for sc in story_script.scenes]
+    scene_videos = asyncio.run(
+        comfy_client.render_all_scenes_parallel(
+            task_dir=task_dir,
+            scenes=scenes_dict,
+            durations=durations,
+            aspect_ratio=aspect_ratio,
+            dry_run=dry_run
+        )
+    )
+    report(f"Hoàn thành render {len(scene_videos)} clip phân cảnh", 0.85)
+
+    # 4. Đóng gói hoàn thiện video cuối cùng
+    report("Đang hoàn thiện video (Audio Ducking, NVENC & phụ đề)...", 0.90)
+    final_video_path = task_dir / "final_story.mp4"
+    assemble_final_story_video_nvenc(
+        scene_video_paths=scene_videos,
+        master_audio_path=master_audio,
+        subtitle_srt_path=master_srt,
+        output_final_path=final_video_path,
+        bgm_path=bgm_path
+    )
+
+    report("Quy trình hoàn tất thành công!", 1.0)
+    return final_video_path
