@@ -40,6 +40,27 @@ class StoryScriptResponse(BaseModel):
     characters: List[StoryCharacter] = Field(default_factory=list, description="Danh sách nhân vật trong câu chuyện kèm Concept")
     scenes: List[StoryScene] = Field(description="Danh sách các phân cảnh theo thứ tự thời gian")
 
+class ActBeat(BaseModel):
+    act_id: int = Field(description="Số thứ tự Hồi (từ 1 đến 5)")
+    act_title: str = Field(description="Tiêu đề ngắn của Hồi")
+    plot_summary: str = Field(description="Tóm tắt diễn biến chính trong Hồi này bằng tiếng Việt")
+    location_anchor: str = Field(
+        description="Mô tả cố định bằng tiếng Anh về không gian/địa điểm diễn ra Hồi này"
+    )
+    lighting_anchor: str = Field(
+        description="Mô tả cố định bằng tiếng Anh về ánh sáng và thời gian của Hồi này"
+    )
+    target_scenes: int = Field(default=14, description="Số lượng phân cảnh cần viết trong Hồi này (12-15 cảnh)")
+
+class MasterBeatSheet(BaseModel):
+    video_title: str = Field(description="Tiêu đề video chuẩn SEO hấp dẫn")
+    overall_synopsis: str = Field(description="Tóm tắt cốt truyện tổng thể")
+    acts: List[ActBeat] = Field(description="Danh sách các Hồi của kịch bản")
+
+class ActScenesBatch(BaseModel):
+    act_id: int = Field(description="Số thứ tự Hồi")
+    scenes: List[StoryScene] = Field(description="Danh sách phân cảnh của Hồi")
+
 class CharacterProfile(BaseModel):
     name: str
     voice_id: str = "vi-VN-NamMinhNeural"

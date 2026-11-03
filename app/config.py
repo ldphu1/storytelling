@@ -14,6 +14,7 @@ class AppConfig(BaseModel):
     
     # ComfyUI Cloudflare Tunnel URLs
     worker_urls: List[str] = Field(default_factory=list)
+    ollama_worker_url: str = ""
     
     # LLM Settings
     llm_provider: str = "openai"  # openai, gemini, ollama, deepseek
@@ -55,6 +56,10 @@ def get_config(config_path: Optional[Path] = None, force_reload: bool = False) -
                 cfg_dict["comfy_max_concurrency"] = int(sys_sec["comfy_max_concurrency"])
             if "worker_urls" in workers_sec:
                 cfg_dict["worker_urls"] = workers_sec["worker_urls"]
+            if "ollama_worker_url" in workers_sec:
+                cfg_dict["ollama_worker_url"] = workers_sec["ollama_worker_url"]
+            elif "ollama_worker_url" in llm_sec:
+                cfg_dict["ollama_worker_url"] = llm_sec["ollama_worker_url"]
             if "provider" in llm_sec:
                 cfg_dict["llm_provider"] = llm_sec["provider"]
             if "api_key" in llm_sec:
@@ -71,6 +76,8 @@ def get_config(config_path: Optional[Path] = None, force_reload: bool = False) -
     # Allow environment variable overrides
     if os.getenv("OPENAI_API_KEY") and "llm_api_key" not in cfg_dict:
         cfg_dict["llm_api_key"] = os.environ["OPENAI_API_KEY"]
+    if os.getenv("OLLAMA_WORKER_URL") and "ollama_worker_url" not in cfg_dict:
+        cfg_dict["ollama_worker_url"] = os.environ["OLLAMA_WORKER_URL"]
 
     config = AppConfig(**cfg_dict)
     if config_path is None:

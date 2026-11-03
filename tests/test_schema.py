@@ -106,3 +106,45 @@ def test_story_script_response_with_dynamic_characters():
     assert script.characters[0].concept == "Kiếm hiệp"
     assert script.scenes[0].character_id == "char_1"
 
+def test_act_beat_and_master_beat_sheet_schema():
+    from app.models.schema import ActBeat, MasterBeatSheet
+    act = ActBeat(
+        act_id=1,
+        act_title="Mở đầu bí ẩn",
+        plot_summary="Lâm Phong bước vào thị trấn trong đêm mưa",
+        location_anchor="inside a dimly lit tavern with wooden tables",
+        lighting_anchor="warm candlelight and rainy shadows",
+        target_scenes=14
+    )
+    assert act.act_id == 1
+    assert act.target_scenes == 14
+
+    beat_sheet = MasterBeatSheet(
+        video_title="Bí Mật Thanh Kiếm Cổ",
+        overall_synopsis="Hành trình khám phá bảo kiếm giang hồ",
+        acts=[act]
+    )
+    assert beat_sheet.video_title == "Bí Mật Thanh Kiếm Cổ"
+    assert len(beat_sheet.acts) == 1
+
+def test_act_scenes_batch_schema():
+    from app.models.schema import ActScenesBatch, StoryScene
+    batch = ActScenesBatch(
+        act_id=1,
+        scenes=[
+            StoryScene(
+                scene_id=1,
+                narration="Mưa rơi nặng hạt trên mái ngói.",
+                has_character=False,
+                character_id="char_minh",
+                shot_type="wide environmental shot",
+                action_prompt="rain falling on roofs",
+                environment_prompt="rainy town",
+                camera_motion="zoom_in"
+            )
+        ]
+    )
+    assert batch.act_id == 1
+    assert len(batch.scenes) == 1
+
+
