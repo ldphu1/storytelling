@@ -1,0 +1,21 @@
+[system]
+storage_dir = "storage"
+nvenc_max_concurrency = 2
+comfy_max_concurrency = 2
+
+[cloud_workers]
+# Dán 2 link Cloudflare Tunnel sinh ra từ Kaggle Notebook tại đây
+worker_urls = [
+    # "https://example-1.trycloudflare.com",
+    # "https://example-2.trycloudflare.com"
+]
+
+[llm]
+provider = "openai" # "openai", "gemini", "ollama", "deepseek"
+api_key = "your-api-key-here"
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o"
+
+[voice]
+default_voice = "vi-VN-NamMinhNeural"
+voice_rate = "+0%"
