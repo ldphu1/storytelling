@@ -232,13 +232,13 @@ class DualGPUComfyStoryClient:
                         try:
                             with open(plate_path, "rb") as f:
                                 files = {"image": (plate_name, f, "image/png")}
-                                resp = requests.post(
+                                self._robust_request(
+                                    "POST",
                                     f"{worker_url}/upload/image",
                                     files=files,
                                     data={"overwrite": "true"},
                                     timeout=30
                                 )
-                                resp.raise_for_status()
                         except Exception as e:
                             logger.error(f"Lỗi upload custom plate {plate_name} lên {worker_url}: {e}")
                             raise
@@ -252,13 +252,13 @@ class DualGPUComfyStoryClient:
                         try:
                             with open(plate_path, "rb") as f:
                                 files = {"image": (plate_path.name, f, "image/png")}
-                                resp = requests.post(
+                                self._robust_request(
+                                    "POST",
                                     f"{worker_url}/upload/image",
                                     files=files,
                                     data={"overwrite": "true"},
                                     timeout=30
                                 )
-                                resp.raise_for_status()
                         except Exception as e:
                             logger.error(f"Lỗi upload ảnh mẫu lên {worker_url}: {e}")
                             raise
@@ -402,6 +402,44 @@ class DualGPUComfyStoryClient:
             ]
             subprocess.run(cmd_cpu, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
 
+    @staticmethod
+    def _robust_request(
+        method: str,
+        url: str,
+        max_retries: int = 5,
+        backoff_base: float = 2.0,
+        **kwargs
+    ) -> requests.Response:
+        """Thực hiện HTTP request an toàn với cơ chế retry và exponential backoff chống rớt kết nối."""
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                resp = requests.request(method, url, **kwargs)
+                if resp.status_code in (500, 502, 503, 504):
+                    if attempt < max_retries - 1:
+                        sleep_time = backoff_base * (attempt + 1)
+                        logger.warning(
+                            f"HTTP {resp.status_code} từ {url}. Đang thử lại lần {attempt+1}/{max_retries} sau {sleep_time:.1f}s..."
+                        )
+                        time.sleep(sleep_time)
+                        continue
+                resp.raise_for_status()
+                return resp
+            except (requests.RequestException, ConnectionResetError, OSError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    sleep_time = backoff_base * (attempt + 1)
+                    logger.warning(
+                        f"Lỗi mạng khi kết nối tới {url} ({e}). Đang thử lại lần {attempt+1}/{max_retries} sau {sleep_time:.1f}s..."
+                    )
+                    time.sleep(sleep_time)
+                else:
+                    logger.error(f"Đã thử lại {max_retries} lần nhưng kết nối tới {url} vẫn thất bại: {e}")
+                    raise last_error
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"Yêu cầu tới {url} thất bại không rõ nguyên nhân.")
+
     def _ensure_scene_image_sync(
         self,
         worker_url: Optional[str],
@@ -412,6 +450,7 @@ class DualGPUComfyStoryClient:
     ) -> Path:
         """Sinh hoặc tải ảnh cho phân cảnh nếu chưa tồn tại (Checkpoint)."""
         if output_img_path.exists() and output_img_path.stat().st_size > 1024:
+            logger.info(f"[Checkpoint] Bỏ qua Cảnh {scene['scene_id']} vì {output_img_path.name} đã tồn tại.")
             return output_img_path
 
         if dry_run or not worker_url:
@@ -422,33 +461,60 @@ class DualGPUComfyStoryClient:
         logger.info(f"Đang gửi Cảnh {scene['scene_id']} tới ComfyUI worker ({worker_url})...")
         wf_payload = self._build_workflow_payload(scene, characters_override=characters_override)
         client_id = str(uuid.uuid4())
-        resp = requests.post(
+        
+        # 1. Gửi prompt an toàn với retry chống rớt mạng
+        resp = self._robust_request(
+            "POST",
             f"{worker_url}/prompt",
             json={"prompt": wf_payload, "client_id": client_id},
-            timeout=30
+            timeout=40
         )
-        resp.raise_for_status()
         prompt_id = resp.json()["prompt_id"]
 
-        while True:
-            hist = requests.get(f"{worker_url}/history/{prompt_id}", timeout=30).json()
-            if prompt_id in hist:
-                img_meta = hist[prompt_id]["outputs"][self.NODES["save_img"]]["images"][0]
-                img_bytes = requests.get(
-                    f"{worker_url}/view",
-                    params={
-                        "filename": img_meta["filename"],
-                        "subfolder": img_meta["subfolder"],
-                        "type": img_meta["type"]
-                    },
-                    timeout=60
-                ).content
-                output_img_path.parent.mkdir(parents=True, exist_ok=True)
-                output_img_path.write_bytes(img_bytes)
-                logger.success(f"Đã tải thành công ảnh Cảnh {scene['scene_id']} từ {worker_url}")
-                break
-            time.sleep(1.2)
-        return output_img_path
+        # 2. Vòng lặp chờ kết xuất (Polling) tự phục hồi lỗi kết nối mạng (ConnectionResetError / Cloudflare timeout)
+        poll_interval = 3.0
+        max_poll_time = 900  # 15 phút tối đa
+        start_poll = time.time()
+        
+        while time.time() - start_poll < max_poll_time:
+            try:
+                hist_resp = requests.get(f"{worker_url}/history/{prompt_id}", timeout=25)
+                if hist_resp.status_code == 200:
+                    hist = hist_resp.json()
+                    if prompt_id in hist:
+                        entry = hist[prompt_id]
+                        status = entry.get("status", {})
+                        if status.get("status_str") == "error":
+                            err_msgs = status.get("messages", [])
+                            raise RuntimeError(f"ComfyUI báo lỗi thực thi Cảnh {scene['scene_id']}: {err_msgs}")
+
+                        outputs = entry.get("outputs", {})
+                        save_node = outputs.get(self.NODES["save_img"])
+                        if save_node and save_node.get("images"):
+                            img_meta = save_node["images"][0]
+                            # 3. Tải ảnh về với cơ chế retry an toàn
+                            view_resp = self._robust_request(
+                                "GET",
+                                f"{worker_url}/view",
+                                params={
+                                    "filename": img_meta["filename"],
+                                    "subfolder": img_meta["subfolder"],
+                                    "type": img_meta["type"]
+                                },
+                                timeout=60
+                            )
+                            output_img_path.parent.mkdir(parents=True, exist_ok=True)
+                            output_img_path.write_bytes(view_resp.content)
+                            logger.success(f"Đã tải thành công ảnh Cảnh {scene['scene_id']} từ {worker_url}")
+                            return output_img_path
+            except (requests.RequestException, ConnectionResetError, OSError) as net_err:
+                logger.warning(
+                    f"Cảnh báo kết nối khi chờ Cảnh {scene['scene_id']} trên {worker_url} ({net_err}). Tiếp tục kiểm tra..."
+                )
+            
+            time.sleep(poll_interval)
+
+        raise TimeoutError(f"Quá thời gian ({max_poll_time}s) chờ kết xuất ảnh Cảnh {scene['scene_id']} trên {worker_url}")
 
     def _render_scene_video_sync(
         self,
@@ -485,28 +551,35 @@ class DualGPUComfyStoryClient:
     ) -> List[str]:
         """
         Chia tải bất đồng bộ chuẩn:
-        - comfy_sem: Điều tiết số request đồng thời tới Cloudflare / Kaggle Workers.
+        - worker_queue: Hàng đợi luân chuyển Worker linh hoạt (khi worker nào rảnh sẽ nhận cảnh tiếp theo ngay).
         - nvenc_sem: Tách biệt điều tiết số tiến trình FFmpeg zoompan chạy trên GPU/CPU local.
         """
         task_dir.mkdir(parents=True, exist_ok=True)
         if not dry_run and self.worker_urls:
             self.sync_character_plates_to_workers(custom_plates=custom_plates)
 
-        num_workers = max(len(self.worker_urls), 1)
-        comfy_sem = asyncio.Semaphore(self.comfy_max_concurrency)
+        worker_queue: asyncio.Queue = asyncio.Queue()
+        if self.worker_urls:
+            for w in self.worker_urls:
+                await worker_queue.put(w)
+        else:
+            await worker_queue.put(None)
+
         nvenc_sem = asyncio.Semaphore(self.nvenc_max_concurrency)
 
         async def _process_single_scene(idx: int, scene: Dict[str, Any], dur: float) -> str:
-            worker_url = self.worker_urls[idx % num_workers] if self.worker_urls else None
             img_out = task_dir / f"scene_{scene['scene_id']:03d}.png"
             vid_out = task_dir / f"scene_{scene['scene_id']:03d}.mp4"
 
-            # 1. Sinh / tải ảnh với giới hạn comfy_sem
-            async with comfy_sem:
+            # 1. Sinh / tải ảnh bằng worker đang rảnh
+            worker_url = await worker_queue.get()
+            try:
                 await asyncio.to_thread(
                     self._ensure_scene_image_sync,
                     worker_url, scene, img_out, dry_run, characters_override
                 )
+            finally:
+                await worker_queue.put(worker_url)
 
             # 2. Render NVENC video với giới hạn nvenc_sem
             async with nvenc_sem:

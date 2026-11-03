@@ -211,3 +211,95 @@ async def test_parallel_render_dry_run(tmp_path):
     assert len(results) == 2
     assert Path(results[0]).exists()
     assert Path(results[1]).exists()
+
+def test_robust_request_retry_on_connection_reset(monkeypatch):
+    import requests
+    from app.services.comfy_remote_client import DualGPUComfyStoryClient
+    
+    attempts = 0
+    def mock_request(method, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise requests.exceptions.ConnectionError(
+                ("Connection aborted.", ConnectionResetError(10054, "An existing connection was forcibly closed", None, 10054, None))
+            )
+        resp = requests.Response()
+        resp.status_code = 200
+        resp._content = b'{"status": "ok"}'
+        return resp
+        
+    monkeypatch.setattr("requests.request", mock_request)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    
+    resp = DualGPUComfyStoryClient._robust_request("GET", "https://mock.worker.com/status", max_retries=3)
+    assert resp.status_code == 200
+    assert attempts == 2
+
+def test_ensure_scene_image_sync_resilient_to_connection_reset(client, tmp_path, monkeypatch):
+    import requests
+    
+    out_img = tmp_path / "scene_001.png"
+    scene = {
+        "scene_id": 1,
+        "has_character": False,
+        "shot_type": "medium portrait shot",
+        "action_prompt": "smiling",
+        "environment_prompt": "city",
+        "camera_motion": "zoom_in"
+    }
+    
+    poll_count = 0
+    def mock_request(method, url, **kwargs):
+        nonlocal poll_count
+        resp = requests.Response()
+        if "/prompt" in url:
+            resp.status_code = 200
+            resp._content = json.dumps({"prompt_id": "test_pid_123"}).encode("utf-8")
+            return resp
+        elif "/view" in url:
+            resp.status_code = 200
+            resp._content = b"\x89PNG\r\n\x1a\n" + b"\x00" * 2000
+            return resp
+        resp.status_code = 404
+        return resp
+        
+    def mock_get(url, **kwargs):
+        nonlocal poll_count
+        resp = requests.Response()
+        if "/history/" in url:
+            poll_count += 1
+            if poll_count == 1:
+                # Lần 1 ném ConnectionResetError mô phỏng rớt kết nối mạng Cloudflare
+                raise requests.exceptions.ConnectionError(
+                    ("Connection aborted.", ConnectionResetError(10054, "Forcibly closed", None, 10054, None))
+                )
+            # Lần 2 trả về kết quả thành công
+            resp.status_code = 200
+            history_data = {
+                "test_pid_123": {
+                    "outputs": {
+                        client.NODES["save_img"]: {
+                            "images": [{"filename": "story_scene_00001_.png", "subfolder": "", "type": "output"}]
+                        }
+                    }
+                }
+            }
+            resp._content = json.dumps(history_data).encode("utf-8")
+            return resp
+        return mock_request("GET", url, **kwargs)
+
+    monkeypatch.setattr("requests.request", mock_request)
+    monkeypatch.setattr("requests.get", mock_get)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    
+    result_path = client._ensure_scene_image_sync(
+        worker_url="https://worker1.trycloudflare.com",
+        scene=scene,
+        output_img_path=out_img,
+        dry_run=False
+    )
+    
+    assert result_path.exists()
+    assert result_path.stat().st_size > 1024
+    assert poll_count == 2

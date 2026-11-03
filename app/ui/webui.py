@@ -23,6 +23,12 @@ from app.config import get_config, AppConfig
 import app.models.schema
 importlib.reload(app.models.schema)
 from app.models.schema import StoryScriptResponse, StoryScene, StoryCharacter, CharacterBible
+import app.services.voice
+importlib.reload(app.services.voice)
+import app.services.comfy_remote_client
+importlib.reload(app.services.comfy_remote_client)
+import app.services.task
+importlib.reload(app.services.task)
 import app.services.llm
 importlib.reload(app.services.llm)
 from app.services.llm import generate_story_scenes, TimeSharedKaggleDirector
@@ -363,8 +369,15 @@ with tab1:
                     camera_motion=camera_motion
                 ))
 
+        col_btn, col_chk = st.columns([2, 1])
+        with col_chk:
+            force_new_task = st.checkbox("Tạo task mới từ đầu", value=False, help="Bỏ qua các checkpoint audio và ảnh đã sinh trước đó để render lại từ đầu.")
+
         is_rendering = st.session_state.get("is_rendering", False)
-        if st.button("🚀 3. Bắt Đầu Sản Xuất Video (Render)", disabled=is_rendering):
+        with col_btn:
+            render_clicked = st.button("🚀 3. Bắt Đầu Sản Xuất Video (Render)", disabled=is_rendering)
+
+        if render_clicked:
             st.session_state["is_rendering"] = True
             progress_bar = st.progress(0.0)
             status_text = st.empty()
@@ -389,6 +402,24 @@ with tab1:
                     scenes=updated_scenes
                 )
                 
+                # Xác định task_id: ưu tiên tiếp tục task cũ có sẵn audio/ảnh nếu không bị buộc tạo mới
+                resume_tid = None
+                if not force_new_task:
+                    tasks_dir = ROOT_DIR / "storage" / "tasks"
+                    if tasks_dir.exists():
+                        candidate_tasks = sorted(tasks_dir.glob("task_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+                        for t in candidate_tasks:
+                            s_file = t / "story_script.json"
+                            if s_file.exists():
+                                try:
+                                    with open(s_file, "r", encoding="utf-8") as f:
+                                        saved_data = json.load(f)
+                                    if saved_data.get("title") == script.title:
+                                        resume_tid = t.name
+                                        break
+                                except Exception:
+                                    pass
+
                 final_video_path = run_story_pipeline(
                     topic=topic_input,
                     config=active_cfg,
@@ -397,7 +428,8 @@ with tab1:
                     dry_run=dry_run_mode,
                     voice_override=voice_choice,
                     story_mode="10min_multiact" if is_10min_mode else "short",
-                    ollama_worker_url=cleaned_ollama
+                    ollama_worker_url=cleaned_ollama,
+                    task_id=resume_tid
                 )
 
                 st.success("🎉 Video đã sản xuất thành công!")

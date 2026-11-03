@@ -27,7 +27,8 @@ def run_story_pipeline(
     tts_backend: Optional[Callable[[str, str, Path], None]] = None,
     voice_override: Optional[str] = None,
     story_mode: str = "short",
-    ollama_worker_url: Optional[str] = None
+    ollama_worker_url: Optional[str] = None,
+    task_id: Optional[str] = None
 ) -> Path:
     """
     Hàm điều phối toàn bộ quy trình sản xuất video kể chuyện AI Scene-by-Scene:
@@ -37,8 +38,8 @@ def run_story_pipeline(
     4. Đóng gói video thành phẩm kèm Audio Ducking
     """
     cfg = config or get_config()
-    task_id = f"task_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-    task_dir = cfg.get_task_dir(task_id)
+    effective_task_id = task_id or f"task_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    task_dir = cfg.get_task_dir(effective_task_id)
 
     def report(msg: str, progress: float):
         logger.info(f"[{progress*100:.0f}%] {msg}")
