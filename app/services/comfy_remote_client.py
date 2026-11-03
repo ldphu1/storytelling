@@ -388,8 +388,11 @@ class DualGPUComfyStoryClient:
             str(output_video_path)
         ]
 
-        res = subprocess.run(cmd_nvenc, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        if res.returncode != 0:
+        try:
+            res = subprocess.run(cmd_nvenc, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=90)
+            if res.returncode != 0:
+                raise RuntimeError("NVENC trả về mã lỗi")
+        except Exception:
             logger.warning("NVENC không khả dụng hoặc trả về lỗi, fallback sang CPU libx264...")
             cmd_cpu = [
                 "ffmpeg", "-y",
@@ -400,7 +403,7 @@ class DualGPUComfyStoryClient:
                 "-an",
                 str(output_video_path)
             ]
-            subprocess.run(cmd_cpu, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
+            subprocess.run(cmd_cpu, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True, timeout=120)
 
     @staticmethod
     def _robust_request(
@@ -450,8 +453,16 @@ class DualGPUComfyStoryClient:
     ) -> Path:
         """Sinh hoặc tải ảnh cho phân cảnh nếu chưa tồn tại (Checkpoint)."""
         if output_img_path.exists() and output_img_path.stat().st_size > 1024:
-            logger.info(f"[Checkpoint] Bỏ qua Cảnh {scene['scene_id']} vì {output_img_path.name} đã tồn tại.")
-            return output_img_path
+            try:
+                from PIL import Image, ImageFile
+                ImageFile.LOAD_TRUNCATED_IMAGES = True
+                with Image.open(output_img_path) as im:
+                    im.verify()
+                logger.info(f"[Checkpoint] Bỏ qua Cảnh {scene['scene_id']} vì {output_img_path.name} đã tồn tại hợp lệ.")
+                return output_img_path
+            except Exception:
+                logger.warning(f"File ảnh {output_img_path.name} bị hỏng hoặc đứt đoạn, đang tải/tạo lại...")
+                output_img_path.unlink(missing_ok=True)
 
         if dry_run or not worker_url:
             logger.info(f"[Dry-Run] Tạo ảnh giả lập cho Cảnh {scene['scene_id']}...")
@@ -504,7 +515,15 @@ class DualGPUComfyStoryClient:
                                 timeout=60
                             )
                             output_img_path.parent.mkdir(parents=True, exist_ok=True)
-                            output_img_path.write_bytes(view_resp.content)
+                            try:
+                                import io
+                                from PIL import Image, ImageFile
+                                ImageFile.LOAD_TRUNCATED_IMAGES = True
+                                with Image.open(io.BytesIO(view_resp.content)) as im:
+                                    im.load()
+                                    im.save(output_img_path)
+                            except Exception:
+                                output_img_path.write_bytes(view_resp.content)
                             logger.success(f"Đã tải thành công ảnh Cảnh {scene['scene_id']} từ {worker_url}")
                             return output_img_path
             except (requests.RequestException, ConnectionResetError, OSError) as net_err:
