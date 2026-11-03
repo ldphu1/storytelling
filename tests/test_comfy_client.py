@@ -58,6 +58,60 @@ def test_broll_scene_disables_ipadapter_weights(client):
     assert wf["18"]["inputs"]["weight"] == 0.0
     assert wf["21"]["inputs"]["weight"] == 0.0
 
+def test_generate_character_plates_dry_run(client, tmp_path):
+    from app.models.schema import StoryCharacter
+    char = StoryCharacter(
+        id="char_swordsman",
+        name="Lâm Phong",
+        concept="Kiếm khách lãng tử",
+        appearance_prompt="a 25-year-old wandering swordsman",
+        default_outfit="wearing a worn grey linen robe"
+    )
+    face_path, outfit_path = client.generate_character_plates(
+        character=char,
+        output_dir=tmp_path,
+        dry_run=True
+    )
+    assert face_path.exists()
+    assert outfit_path.exists()
+    with Image.open(face_path) as img:
+        assert img.size == (1024, 1024)
+    with Image.open(outfit_path) as img:
+        assert img.size == (1024, 1024)
+    assert char.face_plate == "char_swordsman_face.png"
+    assert char.outfit_plate == "char_swordsman_outfit.png"
+
+def test_build_workflow_payload_with_dynamic_character(client, tmp_path):
+    from app.models.schema import StoryCharacter
+    char = StoryCharacter(
+        id="char_swordsman",
+        name="Lâm Phong",
+        concept="Kiếm hiệp",
+        appearance_prompt="a wandering swordsman with bamboo hat",
+        default_outfit="wearing a worn grey linen robe",
+        face_plate="char_swordsman_face.png",
+        outfit_plate="char_swordsman_outfit.png",
+        pulid_weight=0.70,
+        ipadapter_weight=0.45
+    )
+    scene = {
+        "scene_id": 1,
+        "has_character": True,
+        "character_id": "char_swordsman",
+        "shot_type": "medium portrait shot",
+        "action_prompt": "gripping sword hilt thoughtfully",
+        "environment_prompt": "foggy bamboo forest",
+        "camera_motion": "zoom_in"
+    }
+    wf = client._build_workflow_payload(scene, characters_override={"char_swordsman": char})
+    prompt_text = wf["6"]["inputs"]["text"]
+    assert "wandering swordsman with bamboo hat" in prompt_text
+    assert wf["12"]["inputs"]["image"] == "char_swordsman_face.png"
+    assert wf["15"]["inputs"]["image"] == "char_swordsman_outfit.png"
+    assert wf["18"]["inputs"]["weight"] == 0.70
+    assert wf["21"]["inputs"]["weight"] == 0.45
+
+
 def test_render_zoompan_nvenc(tmp_path):
     # Tạo ảnh mẫu
     img_path = tmp_path / "test_scene.png"

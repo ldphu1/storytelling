@@ -50,35 +50,210 @@ class DualGPUComfyStoryClient:
         self.comfy_max_concurrency = cfg.comfy_max_concurrency
         self.nvenc_max_concurrency = cfg.nvenc_max_concurrency
 
-    def sync_character_plates_to_workers(self):
+    def generate_character_plate_image(
+        self,
+        prompt: str,
+        output_path: Path,
+        negative_prompt: Optional[str] = None,
+        seed: Optional[int] = None,
+        worker_url: Optional[str] = None
+    ) -> Path:
+        """Sinh 1 ảnh mẫu 1024x1024 qua ComfyUI txt2img."""
+        worker = worker_url or (self.worker_urls[0] if self.worker_urls else None)
+        if not worker:
+            raise RuntimeError("Không có ComfyUI worker khả dụng để sinh ảnh mẫu nhân vật.")
+        
+        neg = negative_prompt or self.bible.get("global_settings", {}).get("negative_prompt", "")
+        sd = seed or int(time.time() * 1000) % (2**32)
+        
+        prompt_payload = {
+            "3": {
+                "inputs": {
+                    "seed": sd,
+                    "steps": 20,
+                    "cfg": 7.0,
+                    "sampler_name": "euler",
+                    "scheduler": "normal",
+                    "denoise": 1.0,
+                    "model": ["4", 0],
+                    "positive": ["6", 0],
+                    "negative": ["7", 0],
+                    "latent_image": ["5", 0]
+                },
+                "class_type": "KSampler"
+            },
+            "4": {
+                "inputs": {
+                    "ckpt_name": "juggernautXL_v9Lightning.safetensors"
+                },
+                "class_type": "CheckpointLoaderSimple"
+            },
+            "5": {
+                "inputs": {
+                    "width": 1024,
+                    "height": 1024,
+                    "batch_size": 1
+                },
+                "class_type": "EmptyLatentImage"
+            },
+            "6": {
+                "inputs": {
+                    "text": prompt,
+                    "clip": ["4", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "7": {
+                "inputs": {
+                    "text": neg,
+                    "clip": ["4", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "8": {
+                "inputs": {
+                    "samples": ["3", 0],
+                    "vae": ["4", 2]
+                },
+                "class_type": "VAEDecode"
+            },
+            "9": {
+                "inputs": {
+                    "filename_prefix": "char_plate",
+                    "images": ["8", 0]
+                },
+                "class_type": "SaveImage"
+            }
+        }
+        
+        resp = requests.post(f"{worker}/prompt", json={"prompt": prompt_payload}, timeout=30)
+        resp.raise_for_status()
+        prompt_id = resp.json()["prompt_id"]
+        
+        while True:
+            hist_resp = requests.get(f"{worker}/history/{prompt_id}", timeout=30)
+            hist = hist_resp.json()
+            if prompt_id in hist:
+                img_info = hist[prompt_id]["outputs"]["9"]["images"][0]
+                img_data = requests.get(
+                    f"{worker}/view",
+                    params={
+                        "filename": img_info["filename"],
+                        "subfolder": img_info["subfolder"],
+                        "type": img_info["type"]
+                    },
+                    timeout=60
+                ).content
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(img_data)
+                return output_path
+            time.sleep(1.2)
+
+    def generate_character_plates(
+        self,
+        character: Any,
+        output_dir: Path,
+        dry_run: bool = False,
+        worker_url: Optional[str] = None
+    ) -> tuple[Path, Path]:
+        """Tạo cặp ảnh mẫu (Chân dung & Trang phục) 1024x1024 cho một nhân vật."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        char_id = getattr(character, "id", "char_1")
+        face_name = f"{char_id}_face.png"
+        outfit_name = f"{char_id}_outfit.png"
+        face_path = output_dir / face_name
+        outfit_path = output_dir / outfit_name
+
+        if dry_run or not (worker_url or self.worker_urls):
+            # Tạo placeholder ảnh 1024x1024
+            for p, label in [(face_path, "Face Plate"), (outfit_path, "Outfit Plate")]:
+                img = Image.new("RGB", (1024, 1024), color=(40, 50, 65))
+                draw = ImageDraw.Draw(img)
+                draw.rectangle([30, 30, 994, 994], outline=(120, 190, 255), width=4)
+                name = getattr(character, "name", "Character")
+                concept = getattr(character, "concept", "")
+                draw.text((80, 480), f"{name} ({label})\nConcept: {concept}", fill=(240, 245, 255))
+                img.save(p)
+        else:
+            style_prefix = self.bible.get("global_settings", {}).get(
+                "style_prefix",
+                "cinematic 2.5D anime film still, Makoto Shinkai lighting, volumetric fog, highly detailed environment, 8k resolution, masterpiece"
+            )
+            name = getattr(character, "name", "Character")
+            concept = getattr(character, "concept", "")
+            app_p = getattr(character, "appearance_prompt", "") or getattr(character, "appearance_trigger", "")
+            outfit_p = getattr(character, "default_outfit", "")
+
+            face_prompt = (
+                f"close-up portrait shot of {name}, {concept}, {app_p}, "
+                f"gentle neutral expression, looking at camera, {style_prefix}"
+            )
+            outfit_prompt = (
+                f"medium portrait shot of {name}, {concept}, {app_p}, {outfit_p}, "
+                f"standing pose, {style_prefix}"
+            )
+
+            self.generate_character_plate_image(face_prompt, face_path, worker_url=worker_url)
+            self.generate_character_plate_image(outfit_prompt, outfit_path, worker_url=worker_url)
+
+        if hasattr(character, "face_plate"):
+            character.face_plate = face_name
+        if hasattr(character, "outfit_plate"):
+            character.outfit_plate = outfit_name
+
+        return face_path, outfit_path
+
+    def sync_character_plates_to_workers(self, custom_plates: Optional[Dict[str, Path]] = None):
         """Tự động đồng bộ toàn bộ ảnh mẫu từ local lên các ComfyUI Workers trên Kaggle."""
         if not self.worker_urls:
             return
 
+        # 1. Đồng bộ custom_plates từ task nếu có
+        if custom_plates:
+            for plate_name, plate_path in custom_plates.items():
+                if plate_path.exists():
+                    for worker_url in self.worker_urls:
+                        try:
+                            with open(plate_path, "rb") as f:
+                                files = {"image": (plate_name, f, "image/png")}
+                                resp = requests.post(
+                                    f"{worker_url}/upload/image",
+                                    files=files,
+                                    data={"overwrite": "true"},
+                                    timeout=30
+                                )
+                                resp.raise_for_status()
+                        except Exception as e:
+                            logger.error(f"Lỗi upload custom plate {plate_name} lên {worker_url}: {e}")
+                            raise
+
+        # 2. Đồng bộ các starter plates mặc định từ Character Bible
         for char_id, char_data in self.bible.get("characters", {}).items():
             for plate_key in ["face_plate", "outfit_plate"]:
                 plate_path = self.bible_dir / char_data[plate_key]
-                if not plate_path.exists():
-                    raise FileNotFoundError(f"Thiếu ảnh mẫu nhân vật: {plate_path}")
-
-                for worker_url in self.worker_urls:
-                    try:
-                        with open(plate_path, "rb") as f:
-                            files = {"image": (plate_path.name, f, "image/png")}
-                            resp = requests.post(
-                                f"{worker_url}/upload/image",
-                                files=files,
-                                data={"overwrite": "true"},
-                                timeout=30
-                            )
-                            resp.raise_for_status()
-                    except Exception as e:
-                        logger.error(f"Lỗi upload ảnh mẫu lên {worker_url}: {e}")
-                        raise
+                if plate_path.exists():
+                    for worker_url in self.worker_urls:
+                        try:
+                            with open(plate_path, "rb") as f:
+                                files = {"image": (plate_path.name, f, "image/png")}
+                                resp = requests.post(
+                                    f"{worker_url}/upload/image",
+                                    files=files,
+                                    data={"overwrite": "true"},
+                                    timeout=30
+                                )
+                                resp.raise_for_status()
+                        except Exception as e:
+                            logger.error(f"Lỗi upload ảnh mẫu lên {worker_url}: {e}")
+                            raise
 
         logger.info(f"Đã đồng bộ toàn bộ ảnh mẫu nhân vật lên {len(self.worker_urls)} Cloud GPU Workers.")
 
-    def _build_workflow_payload(self, scene: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_workflow_payload(
+        self,
+        scene: Dict[str, Any],
+        characters_override: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Tạo workflow JSON payload hoàn chỉnh cho từng phân cảnh."""
         with open(self.workflow_path, "r", encoding="utf-8") as f:
             wf = json.load(f)
@@ -86,7 +261,27 @@ class DualGPUComfyStoryClient:
         global_cfg = self.bible.get("global_settings", {})
         has_char = scene.get("has_character", True)
         char_id = scene.get("character_id", "char_minh")
-        char_cfg = self.bible.get("characters", {}).get(char_id, list(self.bible.get("characters", {}).values())[0])
+        
+        # Kiểm tra nhân vật từ override trước, sau đó mới fallback về bible
+        if characters_override and char_id in characters_override:
+            c = characters_override[char_id]
+            app_trig = getattr(c, "appearance_prompt", "") or getattr(c, "appearance_trigger", "")
+            outfit = getattr(c, "default_outfit", "")
+            face_pl = getattr(c, "face_plate", f"{char_id}_face.png")
+            outfit_pl = getattr(c, "outfit_plate", f"{char_id}_outfit.png")
+            pulid_w = getattr(c, "pulid_weight", 0.75)
+            ip_w = getattr(c, "ipadapter_weight", 0.50)
+            concept = getattr(c, "concept", "")
+            char_cfg = {
+                "appearance_trigger": f"{app_trig}, {concept}".strip(", "),
+                "default_outfit": outfit,
+                "face_plate": face_pl,
+                "outfit_plate": outfit_pl,
+                "pulid_weight": pulid_w,
+                "ipadapter_weight": ip_w
+            }
+        else:
+            char_cfg = self.bible.get("characters", {}).get(char_id, list(self.bible.get("characters", {}).values())[0])
 
         if has_char:
             full_prompt = (
@@ -196,7 +391,8 @@ class DualGPUComfyStoryClient:
         worker_url: Optional[str],
         scene: Dict[str, Any],
         output_img_path: Path,
-        dry_run: bool = False
+        dry_run: bool = False,
+        characters_override: Optional[Dict[str, Any]] = None
     ) -> Path:
         """Sinh hoặc tải ảnh cho phân cảnh nếu chưa tồn tại (Checkpoint)."""
         if output_img_path.exists() and output_img_path.stat().st_size > 1024:
@@ -208,7 +404,7 @@ class DualGPUComfyStoryClient:
             return output_img_path
 
         logger.info(f"Đang gửi Cảnh {scene['scene_id']} tới ComfyUI worker ({worker_url})...")
-        wf_payload = self._build_workflow_payload(scene)
+        wf_payload = self._build_workflow_payload(scene, characters_override=characters_override)
         client_id = str(uuid.uuid4())
         resp = requests.post(
             f"{worker_url}/prompt",
@@ -267,7 +463,9 @@ class DualGPUComfyStoryClient:
         scenes: List[Dict[str, Any]],
         durations: List[float],
         aspect_ratio: str = "16:9",
-        dry_run: bool = False
+        dry_run: bool = False,
+        characters_override: Optional[Dict[str, Any]] = None,
+        custom_plates: Optional[Dict[str, Path]] = None
     ) -> List[str]:
         """
         Chia tải bất đồng bộ chuẩn:
@@ -276,7 +474,7 @@ class DualGPUComfyStoryClient:
         """
         task_dir.mkdir(parents=True, exist_ok=True)
         if not dry_run and self.worker_urls:
-            self.sync_character_plates_to_workers()
+            self.sync_character_plates_to_workers(custom_plates=custom_plates)
 
         num_workers = max(len(self.worker_urls), 1)
         comfy_sem = asyncio.Semaphore(self.comfy_max_concurrency)
@@ -291,7 +489,7 @@ class DualGPUComfyStoryClient:
             async with comfy_sem:
                 await asyncio.to_thread(
                     self._ensure_scene_image_sync,
-                    worker_url, scene, img_out, dry_run
+                    worker_url, scene, img_out, dry_run, characters_override
                 )
 
             # 2. Render NVENC video với giới hạn nvenc_sem
