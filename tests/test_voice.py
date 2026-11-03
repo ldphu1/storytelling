@@ -183,3 +183,12 @@ def test_default_edge_tts_fallback_marker(tmp_path, monkeypatch):
     assert test_audio.exists()
     # Marker .fallback phải được xóa sạch khi thành công
     assert not marker.exists()
+
+def test_synthesize_sentence_chunks(tmp_path):
+    from app.services.voice import _synthesize_sentence_chunks
+    long_text = "Samurai trẻ tuổi, được gọi là Kenji, đang luyện tập với katana của mình. Kenji tập trung cao độ, mắt nhìn chăm chú phía trước."
+    out_mp3 = tmp_path / "smart_chunk_test.mp3"
+    res = _synthesize_sentence_chunks(long_text, "vi-VN-NamMinhNeural", out_mp3)
+    assert res is True
+    assert out_mp3.exists()
+    assert out_mp3.stat().st_size > 1024

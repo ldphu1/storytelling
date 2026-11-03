@@ -66,11 +66,76 @@ async def _edge_tts_async(text: str, voice_name: str, temp_file: Path, rate: str
     communicate = edge_tts.Communicate(text=text, voice=voice_name, rate=rate)
     await communicate.save(str(temp_file))
 
+def _synthesize_sentence_chunks(text: str, voice_name: str, raw_tmp: Path, rate: str = "+0%") -> bool:
+    """
+    Chia nhỏ đoạn văn dài thành các câu/mệnh đề riêng biệt để Microsoft Edge TTS
+    không bị ngắt kết nối (NoAudioReceived) do quá tải câu dài.
+    Sau đó nối các file âm thanh thành phần bằng FFmpeg.
+    """
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    if len(sentences) <= 1 and len(text) > 80 and "," in text:
+        sentences = [s.strip() for s in re.split(r"(?<=,)\s+", text) if s.strip()]
+
+    if len(sentences) <= 1:
+        return False
+
+    part_files: List[Path] = []
+    try:
+        for idx, sent in enumerate(sentences):
+            if idx > 0:
+                time.sleep(0.6)  # Cooldown giữa các kết nối WebSocket của Microsoft Edge TTS
+            p_file = raw_tmp.with_name(f"{raw_tmp.stem}_sub{idx}.mp3")
+            
+            chunk_success = False
+            for attempt in range(2):
+                try:
+                    asyncio.run(_edge_tts_async(sent, voice_name, p_file, rate=rate))
+                    if p_file.exists() and p_file.stat().st_size > 256:
+                        chunk_success = True
+                        break
+                except Exception as chunk_err:
+                    logger.debug(f"Thử đoạn {idx+1}/{len(sentences)} lần {attempt+1} gặp lỗi: {chunk_err}")
+                    time.sleep(0.8 * (attempt + 1))
+            
+            if not chunk_success:
+                # Thử giọng dự phòng nếu giọng chính bị Microsoft từ chối
+                alt_voice = "vi-VN-HoaiMyNeural" if voice_name != "vi-VN-HoaiMyNeural" else "vi-VN-NamMinhNeural"
+                try:
+                    asyncio.run(_edge_tts_async(sent, alt_voice, p_file, rate=rate))
+                    if p_file.exists() and p_file.stat().st_size > 256:
+                        chunk_success = True
+                except Exception:
+                    pass
+
+            if not chunk_success:
+                return False
+
+            part_files.append(p_file)
+
+        concat_txt = raw_tmp.with_suffix(".txt")
+        lines = [f"file '{p.resolve().as_posix()}'" for p in part_files]
+        concat_txt.write_text("\n".join(lines), encoding="utf-8")
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(concat_txt),
+            "-c", "copy",
+            str(raw_tmp)
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        concat_txt.unlink(missing_ok=True)
+        return raw_tmp.exists() and raw_tmp.stat().st_size > 1024
+    except Exception as err:
+        logger.warning(f"Lỗi khi ghép audio từng phần: {err}")
+        return False
+    finally:
+        for p in part_files:
+            p.unlink(missing_ok=True)
+
 def default_edge_tts(text: str, voice_name: str, voice_file: Path, rate: str = "+0%", max_retries: int = 3):
     """
     Sinh giọng đọc Edge-TTS và chuẩn hóa ngay sang 24000Hz Mono
     nhằm khử sai số đệm khung hình (frame padding) khi concat.
     - Hỗ trợ cơ chế Retry với Exponential Backoff khi Microsoft Edge TTS bị nghẽn mạng (NoAudioReceived).
+    - Tự động chia nhỏ theo câu (chunking) nếu câu văn dài bị Microsoft ngắt kết nối.
     - Tự động luân chuyển giữa các giọng đọc dự phòng (vi-VN-HoaiMyNeural, vi-VN-NamMinhNeural).
     - Tạo marker .fallback nếu phải dùng âm thanh sine tổng hợp để cho phép tự động thử lại khi re-render.
     """
@@ -93,7 +158,14 @@ def default_edge_tts(text: str, voice_name: str, voice_file: Path, rate: str = "
             try:
                 if raw_tmp.exists():
                     raw_tmp.unlink()
-                asyncio.run(_edge_tts_async(text, candidate, raw_tmp, rate=rate))
+                # 1. Thử sinh trực tiếp toàn bộ văn bản
+                try:
+                    asyncio.run(_edge_tts_async(text, candidate, raw_tmp, rate=rate))
+                except Exception as direct_err:
+                    # 2. Nếu Microsoft từ chối (NoAudioReceived trên câu dài), tự động chia nhỏ theo câu/mệnh đề
+                    if not _synthesize_sentence_chunks(text, candidate, raw_tmp, rate=rate):
+                        raise direct_err
+
                 if raw_tmp.exists() and raw_tmp.stat().st_size > 1024:
                     success = True
                     break
