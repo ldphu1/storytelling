@@ -2,15 +2,27 @@
   "3": {
     "inputs": {
       "seed": 42,
-      "steps": 25,
+      "steps": 20,
       "cfg": 7.0,
       "sampler_name": "euler",
       "scheduler": "normal",
       "denoise": 1.0,
-      "model": ["21", 0],
-      "positive": ["6", 0],
-      "negative": ["7", 0],
-      "latent_image": ["5", 0]
+      "model": [
+        "21",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "7",
+        0
+      ],
+      "latent_image": [
+        "5",
+        0
+      ]
     },
     "class_type": "KSampler"
   },
@@ -31,30 +43,57 @@
   "6": {
     "inputs": {
       "text": "cinematic 2.5D anime film still",
-      "clip": ["4", 1]
+      "clip": [
+        "4",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode"
   },
   "7": {
     "inputs": {
       "text": "bad anatomy, deformed, blurry",
-      "clip": ["4", 1]
+      "clip": [
+        "4",
+        1
+      ]
     },
     "class_type": "CLIPTextEncode"
   },
   "8": {
     "inputs": {
-      "samples": ["3", 0],
-      "vae": ["4", 2]
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "4",
+        2
+      ]
     },
     "class_type": "VAEDecode"
   },
   "9": {
     "inputs": {
       "filename_prefix": "story_scene",
-      "images": ["8", 0]
+      "images": [
+        "8",
+        0
+      ]
     },
     "class_type": "SaveImage"
+  },
+  "10": {
+    "inputs": {
+      "ipadapter_file": "ip-adapter-plus_sdxl_vit-h.safetensors"
+    },
+    "class_type": "IPAdapterModelLoader"
+  },
+  "11": {
+    "inputs": {
+      "clip_name": "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors"
+    },
+    "class_type": "CLIPVisionLoader"
   },
   "12": {
     "inputs": {
@@ -73,19 +112,54 @@
   "18": {
     "inputs": {
       "weight": 0.85,
-      "weight_faceidv2": 1.0,
-      "model": ["4", 0],
-      "image": ["12", 0]
+      "weight_type": "linear",
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 1.0,
+      "embeds_scaling": "V only",
+      "model": [
+        "4",
+        0
+      ],
+      "ipadapter": [
+        "10",
+        0
+      ],
+      "image": [
+        "12",
+        0
+      ],
+      "clip_vision": [
+        "11",
+        0
+      ]
     },
-    "class_type": "IPAdapterFaceID"
+    "class_type": "IPAdapterAdvanced"
   },
   "21": {
     "inputs": {
       "weight": 0.55,
       "weight_type": "style and composition",
-      "end_at": 0.70,
-      "model": ["18", 0],
-      "image": ["15", 0]
+      "combine_embeds": "concat",
+      "start_at": 0.0,
+      "end_at": 0.7,
+      "embeds_scaling": "V only",
+      "model": [
+        "18",
+        0
+      ],
+      "ipadapter": [
+        "10",
+        0
+      ],
+      "image": [
+        "15",
+        0
+      ],
+      "clip_vision": [
+        "11",
+        0
+      ]
     },
     "class_type": "IPAdapterAdvanced"
   }
