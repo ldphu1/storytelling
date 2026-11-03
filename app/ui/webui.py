@@ -20,7 +20,7 @@ if sys.platform.startswith("win"):
 
 from app.config import get_config, AppConfig
 from app.models.schema import StoryScriptResponse, StoryScene, StoryCharacter, CharacterBible
-from app.services.llm import generate_story_scenes
+from app.services.llm import generate_story_scenes, TimeSharedKaggleDirector
 from app.services.task import run_story_pipeline
 from app.services.comfy_remote_client import DualGPUComfyStoryClient
 
@@ -42,6 +42,12 @@ with st.sidebar:
     st.header("⚙️ Cấu Hình Hệ Thống")
     
     st.subheader("🌐 Cloudflare Tunnel Workers")
+    ollama_default = cfg.ollama_worker_url or ""
+    ollama_url_input = st.text_input("Ollama Worker (cuda:0,1, Port 11434)", value=ollama_default, placeholder="https://....trycloudflare.com")
+    cleaned_ollama = DualGPUComfyStoryClient.clean_worker_url(ollama_url_input)
+    if ollama_url_input.strip() and cleaned_ollama != ollama_url_input.strip():
+        st.sidebar.caption(f"🔍 Tự động nhận diện Ollama: `{cleaned_ollama}`")
+
     w0_default = cfg.worker_urls[0] if len(cfg.worker_urls) > 0 else ""
     w1_default = cfg.worker_urls[1] if len(cfg.worker_urls) > 1 else ""
     worker_url_0 = st.text_input("Worker GPU 0 (cuda:0, Port 8188)", value=w0_default, placeholder="https://....trycloudflare.com")
@@ -55,14 +61,47 @@ with st.sidebar:
         st.sidebar.caption(f"🔍 Tự động nhận diện Worker 1: `{cleaned_w1}`")
     
     active_workers = [u for u in [cleaned_w0, cleaned_w1] if u]
+
+    # Nút Xả Sạch VRAM Kaggle Thủ Công
+    btn_evict_vram = st.button("🧹 Xả Sạch VRAM Kaggle Thủ Công", help="Ép Ollama giải phóng Qwen-32B (keep_alive: 0) và ComfyUI giải phóng bộ nhớ (/free)")
+    if btn_evict_vram:
+        with st.spinner("Đang xả sạch VRAM trên Kaggle..."):
+            freed_services = []
+            for w_url in active_workers:
+                try:
+                    requests.post(f"{w_url}/free", json={"unload_models": True, "free_memory": True}, timeout=10)
+                    freed_services.append(f"ComfyUI ({w_url})")
+                except Exception as ex:
+                    st.warning(f"Không thể xả ComfyUI {w_url}: {ex}")
+            if cleaned_ollama:
+                try:
+                    requests.post(f"{cleaned_ollama}/api/generate", json={"model": "qwen2.5:32b-instruct-q4_K_M", "keep_alive": 0}, timeout=15)
+                    freed_services.append(f"Ollama ({cleaned_ollama})")
+                except Exception as ex:
+                    st.warning(f"Không thể xả Ollama {cleaned_ollama}: {ex}")
+            if freed_services:
+                st.success(f"✅ Đã xả sạch VRAM: {', '.join(freed_services)}!")
+            else:
+                st.info("Chưa có URL worker khả dụng để xả VRAM.")
     
     dry_run_mode = st.checkbox("🧪 Chế độ Dry-Run (Không cần GPU Cloud)", value=(len(active_workers) == 0))
     if dry_run_mode:
         st.info("Đang bật chế độ Dry-Run: Hệ thống sẽ tạo ảnh giả lập và dùng FFmpeg local để kiểm tra luồng video.")
 
+    st.subheader("🎬 Chế Độ Kịch Bản")
+    story_mode_choice = st.radio(
+        "Định dạng video:",
+        [
+            "⚡ Kịch bản ngắn (3 - 8 phân cảnh)",
+            "🎬 Phim trường ca 10 phút (5 Hồi / 70 cảnh)"
+        ],
+        index=0
+    )
+    is_10min_mode = "10 phút" in story_mode_choice
+
     st.subheader("🤖 Cấu hình LLM")
     provider_options = ["gemini", "openai", "deepseek", "ollama", "mock (thử nghiệm không cần key)"]
-    llm_provider = st.selectbox("Nhà cung cấp LLM", provider_options, index=0)
+    llm_provider = st.selectbox("Nhà cung cấp LLM", provider_options, index=3 if cleaned_ollama else 0)
     clean_provider = llm_provider.split()[0].lower()
 
     if clean_provider == "mock":
@@ -71,14 +110,15 @@ with st.sidebar:
         llm_model = "mock"
         llm_base_url = ""
     elif clean_provider == "ollama":
-        st.info("🦙 Ollama: Chạy mô hình mã nguồn mở (Local hoặc Remote trên Kaggle GPU 1).")
+        st.info("🦙 Ollama: Chạy mô hình mã nguồn mở trên Kaggle (cuda:0,1 32GB VRAM).")
         llm_api_key = "ollama"
+        default_ollama_base = f"{cleaned_ollama}/v1" if cleaned_ollama else "http://localhost:11434/v1"
         llm_base_url = st.text_input(
             "Ollama Base URL",
-            value="http://localhost:11434/v1",
-            help="Nếu chạy trên Kaggle, dán đường link Cloudflare Tunnel vào đây kèm đuôi /v1 (ví dụ: https://...trycloudflare.com/v1)"
+            value=default_ollama_base,
+            help="Đường link Cloudflare Tunnel tới Ollama port 11434 kèm /v1"
         )
-        llm_model = st.text_input("Tên Model", value="qwen2.5:7b", help="Model khuyến nghị: qwen2.5:7b hoặc qwen2.5:14b")
+        llm_model = st.text_input("Tên Model", value="qwen2.5:32b-instruct-q4_K_M" if is_10min_mode else "qwen2.5:7b", help="Model khuyến nghị: qwen2.5:32b-instruct-q4_K_M cho phim 10 phút")
     else:
         if clean_provider == "gemini":
             default_base = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -108,11 +148,14 @@ tab1, tab2, tab3 = st.tabs(["📝 Tạo Video", "👤 Character Bible", "📡 Tr
 
 # --- TAB 1: TẠO VIDEO ---
 with tab1:
+    if is_10min_mode:
+        st.info("🎬 **Chế độ Phim Trường Ca 10 Phút Đang Bật**: Hệ thống sẽ tự động cấu trúc 5 Hồi (Acts), điều phối sinh kịch bản chi tiết qua TimeSharedKaggleDirector và tự động giải phóng sạch sẽ 21.5GB VRAM Kaggle trước khi bàn giao cho ComfyUI.")
+
     col_input1, col_input2 = st.columns([3, 1])
     with col_input1:
         topic_input = st.text_input("Chủ đề câu chuyện:", value="Một ngày bình yên của Minh và Linh trên phố cổ Hà Nội")
     with col_input2:
-        scene_count = st.slider("Số phân cảnh:", min_value=3, max_value=8, value=4)
+        scene_count = st.slider("Số phân cảnh:", min_value=3, max_value=8, value=4, disabled=is_10min_mode, help="Chế độ 10 phút tự động tạo ~70 phân cảnh qua 5 Hồi")
 
     col_btn1, col_btn2 = st.columns([2, 1])
     with col_btn1:
@@ -124,17 +167,31 @@ with tab1:
         active_prov = "mock" if btn_mock else clean_provider
         with st.spinner("Đang khởi tạo kịch bản phân cảnh..."):
             try:
-                story_script = generate_story_scenes(
-                    topic=topic_input,
-                    character_bible_path=str(bible_path),
-                    provider=active_prov,
-                    api_key=llm_api_key,
-                    base_url=llm_base_url if not btn_mock else "",
-                    model=llm_model if not btn_mock else "mock",
-                    scene_count=scene_count
-                )
+                if is_10min_mode and not btn_mock:
+                    st.info("Đang khởi động TimeSharedKaggleDirector với Qwen-2.5-32B qua 5 Hồi...")
+                    director = TimeSharedKaggleDirector(
+                        ollama_url=cleaned_ollama or (llm_base_url.replace("/v1", "").rstrip("/") if llm_base_url else "http://localhost:11434"),
+                        comfy_urls=active_workers,
+                        model_name=llm_model,
+                        bible_path=str(bible_path)
+                    )
+                    checkpoint_dir = ROOT_DIR / "storage" / "webui_10min_checkpoints"
+                    story_script = director.generate_full_10min_story(
+                        topic=topic_input,
+                        checkpoint_dir=checkpoint_dir
+                    )
+                else:
+                    story_script = generate_story_scenes(
+                        topic=topic_input,
+                        character_bible_path=str(bible_path),
+                        provider=active_prov,
+                        api_key=llm_api_key,
+                        base_url=llm_base_url if not btn_mock else "",
+                        model=llm_model if not btn_mock else "mock",
+                        scene_count=scene_count
+                    )
                 st.session_state["current_script"] = story_script
-                st.success("Đã sinh kịch bản thành công! Hãy kiểm tra và chỉnh sửa bên dưới.")
+                st.success(f"Đã sinh kịch bản thành công ({len(story_script.scenes)} phân cảnh)! Hãy kiểm tra và chỉnh sửa bên dưới.")
             except Exception as e:
                 st.error(f"Lỗi sinh kịch bản: {e}")
                 st.info(
@@ -299,6 +356,7 @@ with tab1:
             try:
                 active_cfg = AppConfig(
                     worker_urls=active_workers,
+                    ollama_worker_url=cleaned_ollama,
                     llm_provider=llm_provider,
                     llm_api_key=llm_api_key,
                     llm_model=llm_model,
@@ -317,7 +375,9 @@ with tab1:
                     custom_script=final_script,
                     progress_callback=on_progress,
                     dry_run=dry_run_mode,
-                    voice_override=voice_choice
+                    voice_override=voice_choice,
+                    story_mode="10min_multiact" if is_10min_mode else "short",
+                    ollama_worker_url=cleaned_ollama
                 )
 
                 st.success("🎉 Video đã sản xuất thành công!")
@@ -366,8 +426,27 @@ with tab2:
 # --- TAB 3: TRẠNG THÁI WORKER ---
 with tab3:
     st.subheader("📡 Kiểm Tra Kết Nối Cloudflare Workers")
+    
+    if cleaned_ollama:
+        col_o1, col_o2 = st.columns([3, 1])
+        with col_o1:
+            st.write(f"🦙 **Ollama Worker (Port 11434):** `{cleaned_ollama}`")
+        with col_o2:
+            if st.button("Ping Ollama", key="ping_ollama"):
+                try:
+                    resp = requests.get(f"{cleaned_ollama}/api/tags", timeout=10)
+                    if resp.status_code == 200:
+                        models = [m.get("name") for m in resp.json().get("models", [])]
+                        model_str = f" (Models: {', '.join(models[:3])})" if models else ""
+                        st.success(f"🟢 Online{model_str}")
+                    else:
+                        st.warning(f"🟡 Phản hồi mã: {resp.status_code}")
+                except Exception as err:
+                    st.error(f"🔴 Offline: {err}")
+        st.divider()
+
     if not active_workers:
-        st.warning("Chưa cấu hình Worker URL trong sidebar.")
+        st.warning("Chưa cấu hình Worker URL ComfyUI trong sidebar.")
     else:
         for idx, wurl in enumerate(active_workers):
             col_w1, col_w2 = st.columns([3, 1])
