@@ -1,11 +1,13 @@
 """
-Script Khởi Chạy ComfyUI Dual-Worker Trên Kaggle ($2 x Tesla T4)
-Chế độ chạy: Accelerator: GPU T4 x 2, Internet: On
+Script Triển Khai Chiến Lược 1 Trên Kaggle ($2 x Tesla T4):
+Chia sẻ VRAM theo pha thời gian (Time-Shared VRAM Eviction)
+- Pha 1: Qwen-2.5-32B-Instruct chiếm 21.5GB VRAM (gộp cả 2 GPU cuda:0,1) để đạo diễn kịch bản
+- Pha 2: Gỡ sạch trọng số LLM khỏi VRAM (keep_alive: 0) thu hồi 100% VRAM về 0 MB
+- Pha 3: Dual-Worker ComfyUI (GPU 0: 8188, GPU 1: 8189) render song song các cảnh với SDXL + IP-Adapter
 """
 
 import os
 import re
-import sys
 import time
 import subprocess
 from pathlib import Path
@@ -13,141 +15,152 @@ from pathlib import Path
 WORKSPACE = Path("/kaggle/working")
 COMFY_DIR = WORKSPACE / "ComfyUI"
 DATASET_DIR = Path("/kaggle/input/comfyui-story-models")
+LLM_MODEL_NAME = "qwen2.5:32b-instruct-q4_K_M"
 
-def setup_environment():
-    print("=" * 70)
-    print("[*] 1. Khởi tạo môi trường ComfyUI & Custom Nodes khóa nhân vật...")
-    print("=" * 70)
+def run_cmd(cmd: str, cwd=None, env=None):
+    subprocess.run(cmd, shell=True, cwd=cwd, env=env, check=True)
 
+def setup_all_services():
+    print("=" * 75)
+    print("[*] 1/4: Đang cài đặt Cloudflare Tunnel...")
+    print("=" * 75)
+    if not Path("/usr/local/bin/cloudflared").exists():
+        run_cmd("wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O /usr/local/bin/cloudflared")
+        run_cmd("chmod +x /usr/local/bin/cloudflared")
+
+    print("\n[*] 2/4: Đang cài đặt Ollama Engine...")
+    if not Path("/usr/local/bin/ollama").exists() and not Path("/usr/bin/ollama").exists():
+        run_cmd("curl -fsSL https://ollama.com/install.sh | sh")
+
+    # Symlink cache model từ Kaggle Dataset nếu có (nạp trong 0 giây)
+    ollama_dataset_cache = DATASET_DIR / "ollama_models"
+    ollama_target_dir = Path("/root/.ollama/models")
+    if ollama_dataset_cache.exists() and not ollama_target_dir.exists():
+        print("[+] Phát hiện cache LLM 32B trong Kaggle Dataset! Đang tạo Symlink...")
+        ollama_target_dir.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(str(ollama_dataset_cache), str(ollama_target_dir))
+        except Exception as e:
+            print(f"[!] Không thể symlink Ollama cache: {e}")
+
+    print("\n[*] 3/4: Đang cài đặt ComfyUI & IP-Adapter Plus...")
     if not COMFY_DIR.exists():
-        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/comfyanonymous/ComfyUI.git", str(COMFY_DIR)], check=True)
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", str(COMFY_DIR / "requirements.txt")], check=True)
+        run_cmd(f"git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git {COMFY_DIR}")
+        run_cmd("pip install -q -r requirements.txt", cwd=str(COMFY_DIR))
 
         custom_nodes = COMFY_DIR / "custom_nodes"
-        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/cubiq/ComfyUI_IPAdapter_plus.git", str(custom_nodes / "ComfyUI_IPAdapter_plus")], check=True)
-        subprocess.run(["git", "clone", "--depth", "1", "https://github.com/smthemex/ComfyUI_StoryDiffusion.git", str(custom_nodes / "ComfyUI_StoryDiffusion")], check=True)
-        
-        # Cài đặt insightface và onnxruntime-gpu
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "insightface", "onnxruntime-gpu", "einops"], check=True)
+        run_cmd(f"git clone --depth 1 https://github.com/cubiq/ComfyUI_IPAdapter_plus.git {custom_nodes / 'ComfyUI_IPAdapter_plus'}")
+        run_cmd(f"git clone --depth 1 https://github.com/smthemex/ComfyUI_StoryDiffusion.git {custom_nodes / 'ComfyUI_StoryDiffusion'}")
+        run_cmd("pip install -q insightface onnxruntime-gpu einops")
 
-    # Kiểm tra bắt buộc: InsightFace và ONNX Runtime phải chạy trên GPU (CUDAExecutionProvider)
-    check_ort_cmd = [
-        sys.executable, "-c",
-        "import onnxruntime as ort; p = ort.get_available_providers(); print(p); assert 'CUDAExecutionProvider' in p, 'CUDAExecutionProvider missing!'"
-    ]
-    res = subprocess.run(check_ort_cmd, capture_output=True, text=True)
-    if res.returncode != 0:
-        print("[!] CẢNH BÁO: CUDAExecutionProvider chưa khả dụng. Đang cài đặt onnxruntime-gpu tương thích CUDA...")
-        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--force-reinstall", "onnxruntime-gpu"], check=True)
-        # Kiểm tra lại lần 2
-        res2 = subprocess.run(check_ort_cmd, capture_output=True, text=True)
-        if res2.returncode != 0:
-            print(f"[!] Lỗi ONNX GPU: {res2.stderr}")
-            print("[!] InsightFace có thể sẽ chạy bằng CPU nếu thiếu cuDNN phù hợp.")
-    else:
-        print("[+] Xác nhận: ONNX Runtime đang kích hoạt CUDAExecutionProvider trên GPU T4!")
+    # Kiểm tra ONNX Runtime
+    try:
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        print(f"[*] ONNX Providers khả dụng: {providers}")
+    except Exception as e:
+        print(f"[!] ONNX check: {e}")
 
-    # Tạo Symlink từ Kaggle Dataset (nạp 0 giây)
-    print("\n[*] 2. Thiết lập bộ trọng số mô hình...")
-    mapping = {
-        "checkpoints": COMFY_DIR / "models" / "checkpoints",
-        "ipadapter": COMFY_DIR / "models" / "ipadapter",
-        "clip_vision": COMFY_DIR / "models" / "clip_vision",
-        "insightface": COMFY_DIR / "models" / "insightface"
-    }
-
+    # Symlink bộ model SDXL + IP-Adapter từ Kaggle Dataset
     if DATASET_DIR.exists():
-        print(f"[+] Tìm thấy Kaggle Dataset tại {DATASET_DIR}. Đang tạo Symlinks...")
-        for src_name, dst_path in mapping.items():
-            src_path = DATASET_DIR / src_name
-            dst_path.mkdir(parents=True, exist_ok=True)
-            if src_path.exists():
-                for item in src_path.iterdir():
-                    target_link = dst_path / item.name
-                    if not target_link.exists():
-                        os.symlink(str(item), str(target_link))
-        print("[+] Đã nạp xong toàn bộ model từ Dataset vào ComfyUI.")
+        for folder in ["checkpoints", "ipadapter", "clip_vision", "insightface"]:
+            src = DATASET_DIR / folder
+            dst = COMFY_DIR / "models" / folder
+            dst.mkdir(parents=True, exist_ok=True)
+            if src.exists():
+                for f in src.iterdir():
+                    link = dst / f.name
+                    if not link.exists():
+                        try:
+                            os.symlink(str(f), str(link))
+                        except Exception:
+                            pass
     else:
-        print("[!] Không tìm thấy Dataset /kaggle/input/comfyui-story-models.")
-        print("[*] Đang thực hiện Fallback: Tải trọng số cơ bản qua Internet...")
-        for p in mapping.values():
-            p.mkdir(parents=True, exist_ok=True)
-        
-        # Fallback tải trực tiếp nếu chưa kịp gắn Kaggle Dataset
+        print("[!] Không tìm thấy Kaggle Dataset, tải fallback từ HuggingFace...")
+        for folder in ["checkpoints", "ipadapter", "clip_vision", "insightface"]:
+            (COMFY_DIR / "models" / folder).mkdir(parents=True, exist_ok=True)
         downloads = [
-            (
-                mapping["checkpoints"] / "juggernautXL_v9Lightning.safetensors",
-                "https://huggingface.co/RunDiffusion/Juggernaut-XL-Lightning/resolve/main/Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors"
-            ),
-            (
-                mapping["ipadapter"] / "ip-adapter-plus_sdxl_vit-h.safetensors",
-                "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors"
-            ),
-            (
-                mapping["clip_vision"] / "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
-                "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
-            )
+            (COMFY_DIR / "models" / "checkpoints" / "juggernautXL_v9Lightning.safetensors", "https://huggingface.co/RunDiffusion/Juggernaut-XL-Lightning/resolve/main/Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors"),
+            (COMFY_DIR / "models" / "ipadapter" / "ip-adapter-plus_sdxl_vit-h.safetensors", "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors"),
+            (COMFY_DIR / "models" / "clip_vision" / "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors", "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors")
         ]
         for dest, url in downloads:
             if not dest.exists():
-                print(f"[*] Đang tải fallback: {dest.name}...")
+                print(f"[*] Đang tải: {dest.name}...")
                 subprocess.run(["wget", "-q", "-c", url, "-O", str(dest)], check=False)
 
-    # Cài đặt Cloudflared
-    print("\n[*] 3. Thiết lập Cloudflare Tunnel...")
-    if not Path("/usr/local/bin/cloudflared").exists():
-        subprocess.run([
-            "wget", "-q", "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64",
-            "-O", "/usr/local/bin/cloudflared"
-        ], check=True)
-        subprocess.run(["chmod", "+x", "/usr/local/bin/cloudflared"], check=True)
+def start_ollama_dual_gpu():
+    print("\n[*] 4/4: Khởi chạy Ollama Server trên cả 2 GPU (cuda:0,1)...")
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = "0,1"
+    env["OLLAMA_HOST"] = "127.0.0.1:11434"
+    env["OLLAMA_FLASH_ATTENTION"] = "1"
+    env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
+    env["OLLAMA_NUM_PARALLEL"] = "1"
+    env["OLLAMA_MAX_LOADED_MODELS"] = "1"
 
-def launch_worker(gpu_id: int, port: int):
-    print(f"[*] Khởi chạy ComfyUI Worker {gpu_id} trên GPU cuda:{gpu_id} (Port {port})...")
-    comfy_proc = subprocess.Popen(
-        [sys.executable, "main.py", "--listen", "127.0.0.1", "--port", str(port), "--cuda-device", str(gpu_id), "--highvram"],
+    log_file = open(WORKSPACE / "ollama.log", "w")
+    proc = subprocess.Popen(["ollama", "serve"], env=env, stdout=log_file, stderr=subprocess.STDOUT)
+    time.sleep(5)
+
+    print(f"[*] Đang kiểm tra/nạp trọng số {LLM_MODEL_NAME}...")
+    run_cmd(f"ollama pull {LLM_MODEL_NAME}", env=env)
+    return proc
+
+def start_comfy_worker(gpu_id: int, port: int):
+    """
+    Khởi động ComfyUI với cờ --normalvram (không dùng --gpu-only)
+    để cho phép ComfyUI giải phóng VRAM khi gọi endpoint /free.
+    """
+    print(f"[*] Khởi chạy ComfyUI Worker trên GPU cuda:{gpu_id} (Port {port})...")
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    log_file = open(WORKSPACE / f"comfy_gpu{gpu_id}.log", "w")
+
+    return subprocess.Popen(
+        ["python", "main.py", "--listen", "127.0.0.1", "--port", str(port), "--normalvram", "--dont-print-server"],
         cwd=str(COMFY_DIR),
-        stdout=subprocess.DEVNULL,
+        env=env,
+        stdout=log_file,
         stderr=subprocess.STDOUT
     )
 
-    log_path = WORKSPACE / f"tunnel_gpu{gpu_id}.log"
-    with open(log_path, "w") as log_file:
+def open_cloudflare_tunnel(local_port: int, name: str) -> str:
+    log_path = WORKSPACE / f"tunnel_{name}.log"
+    with open(log_path, "w") as f:
         subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
-            stdout=log_file,
+            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{local_port}"],
+            stdout=f,
             stderr=subprocess.STDOUT
         )
-    return comfy_proc, log_path
-
-def extract_tunnel_url(log_path: Path, timeout: int = 60) -> str:
-    for _ in range(timeout // 2):
+    for _ in range(40):
         time.sleep(2)
         if log_path.exists():
-            content = log_path.read_text()
-            match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", content)
+            match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", log_path.read_text())
             if match:
                 return match.group(0)
-    raise RuntimeError(f"Không lấy được URL Cloudflare từ {log_path}")
+    raise RuntimeError(f"Không thể khởi tạo Cloudflare Tunnel cho {name} (port {local_port})")
 
 if __name__ == "__main__":
-    setup_environment()
-    proc0, log0 = launch_worker(gpu_id=0, port=8188)
-    proc1, log1 = launch_worker(gpu_id=1, port=8189)
+    setup_all_services()
+    ollama_proc = start_ollama_dual_gpu()
+    comfy0_proc = start_comfy_worker(gpu_id=0, port=8188)
+    comfy1_proc = start_comfy_worker(gpu_id=1, port=8189)
 
-    url0 = extract_tunnel_url(log0)
-    url1 = extract_tunnel_url(log1)
+    llm_url = open_cloudflare_tunnel(11434, "ollama_32b")
+    comfy0_url = open_cloudflare_tunnel(8188, "comfy_gpu0")
+    comfy1_url = open_cloudflare_tunnel(8189, "comfy_gpu1")
 
-    print("\n" + "=" * 70)
-    print("🎉 DUAL-GPU COMFYUI WORKERS ĐÃ SẴN SÀNG HOẠT ĐỘNG!")
-    print(f"    WORKER_URLS = [\n        '{url0}',\n        '{url1}'\n    ]")
-    print("=" * 70)
-    print("[+] Hãy copy 2 đường dẫn trên dán vào WebUI (hoặc config.toml) trên máy Local.")
-    print("=" * 70 + "\n")
+    print("\n" + "=" * 75)
+    print("🎉 HỆ THỐNG TIME-SHARED DUAL-GPU KAGGLE ĐÃ SẴN SÀNG!")
+    print("=" * 75)
+    print(f'ollama_worker_url = "{llm_url}"')
+    print(f'comfy_worker_urls = [\n    "{comfy0_url}",\n    "{comfy1_url}"\n]')
+    print("=" * 75)
+    print("[+] Hãy copy 3 đường link trên dán vào WebUI Studio trên máy Local của bạn.")
+    print("=" * 75 + "\n")
+
     try:
-        proc0.wait()
+        ollama_proc.wait()
     except KeyboardInterrupt:
-        print("\n[*] Đang tắt các tiến trình ComfyUI...")
-    finally:
-        proc0.terminate()
-        proc1.terminate()
+        print("\n[*] Đang tắt các tiến trình...")
