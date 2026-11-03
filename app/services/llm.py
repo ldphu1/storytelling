@@ -500,11 +500,6 @@ class TimeSharedKaggleDirector:
                     chars = sheet.characters
             except Exception:
                 pass
-                title = sheet.video_title or topic
-                if sheet.characters:
-                    chars = sheet.characters
-            except Exception:
-                pass
         if not chars and "characters" in self.bible:
             for cid, cdata in self.bible["characters"].items():
                 chars.append(

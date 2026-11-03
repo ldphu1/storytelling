@@ -18,8 +18,13 @@ if sys.platform.startswith("win"):
     except Exception:
         pass
 
+import importlib
 from app.config import get_config, AppConfig
+import app.models.schema
+importlib.reload(app.models.schema)
 from app.models.schema import StoryScriptResponse, StoryScene, StoryCharacter, CharacterBible
+import app.services.llm
+importlib.reload(app.services.llm)
 from app.services.llm import generate_story_scenes, TimeSharedKaggleDirector
 from app.services.task import run_story_pipeline
 from app.services.comfy_remote_client import DualGPUComfyStoryClient
@@ -176,11 +181,17 @@ with tab1:
                         bible_path=str(bible_path)
                     )
                     checkpoint_dir = ROOT_DIR / "storage" / "webui_10min_checkpoints"
-                    story_script = director.generate_full_10min_story(
-                        topic=topic_input,
-                        checkpoint_dir=checkpoint_dir,
-                        force_refresh=True
-                    )
+                    try:
+                        story_script = director.generate_full_10min_story(
+                            topic=topic_input,
+                            checkpoint_dir=checkpoint_dir,
+                            force_refresh=True
+                        )
+                    except TypeError:
+                        story_script = director.generate_full_10min_story(
+                            topic=topic_input,
+                            checkpoint_dir=checkpoint_dir
+                        )
                 else:
                     story_script = generate_story_scenes(
                         topic=topic_input,
