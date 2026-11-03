@@ -8,10 +8,12 @@ Chia sẻ VRAM theo pha thời gian (Time-Shared VRAM Eviction)
 
 import os
 import re
+import sys
 import time
 import shutil
 import subprocess
 from pathlib import Path
+import requests
 
 WORKSPACE = Path("/kaggle/working")
 COMFY_DIR = WORKSPACE / "ComfyUI"
@@ -54,12 +56,11 @@ def setup_all_services():
     print("\n[*] 3/4: Đang cài đặt ComfyUI & IP-Adapter Plus...")
     if not COMFY_DIR.exists():
         run_cmd(f"git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git {COMFY_DIR}")
-        run_cmd("pip install -q -r requirements.txt", cwd=str(COMFY_DIR))
+        run_cmd(f"{sys.executable} -m pip install -q -r requirements.txt", cwd=str(COMFY_DIR))
 
         custom_nodes = COMFY_DIR / "custom_nodes"
         run_cmd(f"git clone --depth 1 https://github.com/cubiq/ComfyUI_IPAdapter_plus.git {custom_nodes / 'ComfyUI_IPAdapter_plus'}")
-        run_cmd(f"git clone --depth 1 https://github.com/smthemex/ComfyUI_StoryDiffusion.git {custom_nodes / 'ComfyUI_StoryDiffusion'}")
-        run_cmd("pip install -q insightface onnxruntime-gpu einops")
+        run_cmd(f"{sys.executable} -m pip install -q insightface onnxruntime-gpu einops requests")
 
     # Kiểm tra ONNX Runtime
     try:
@@ -134,13 +135,40 @@ def start_comfy_worker(gpu_id: int, port: int):
     env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
     log_file = open(WORKSPACE / f"comfy_gpu{gpu_id}.log", "w")
 
+    cmd = [
+        sys.executable, "main.py",
+        "--listen", "0.0.0.0",
+        "--port", str(port),
+        "--normalvram"
+    ]
     return subprocess.Popen(
-        ["python", "main.py", "--listen", "127.0.0.1", "--port", str(port), "--normalvram", "--dont-print-server"],
+        cmd,
         cwd=str(COMFY_DIR),
         env=env,
         stdout=log_file,
         stderr=subprocess.STDOUT
     )
+
+def wait_for_comfy(port: int, gpu_id: int, timeout: int = 60) -> bool:
+    print(f"[*] Đang đợi ComfyUI GPU {gpu_id} (Port {port}) khởi động...")
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            r = requests.get(f"http://127.0.0.1:{port}/system_stats", timeout=2)
+            if r.status_code == 200:
+                print(f"[+] ComfyUI GPU {gpu_id} (Port {port}) đã khởi động thành công!")
+                return True
+        except Exception:
+            pass
+        time.sleep(2)
+    
+    print(f"[!] CẢNH BÁO: ComfyUI GPU {gpu_id} (Port {port}) chưa phản hồi sau {timeout}s.")
+    log_p = WORKSPACE / f"comfy_gpu{gpu_id}.log"
+    if log_p.exists():
+        print(f"--- LOG COMFYUI GPU {gpu_id} ---")
+        print(log_p.read_text(encoding="utf-8", errors="ignore")[-1500:])
+        print("-------------------------------")
+    return False
 
 def open_cloudflare_tunnel(local_port: int, name: str) -> str:
     log_path = WORKSPACE / f"tunnel_{name}.log"
@@ -167,6 +195,10 @@ if __name__ == "__main__":
     ollama_proc = start_ollama_dual_gpu()
     comfy0_proc = start_comfy_worker(gpu_id=0, port=8188)
     comfy1_proc = start_comfy_worker(gpu_id=1, port=8189)
+
+    # Đảm bảo 2 ComfyUI đã khởi động và lắng nghe thành công trước khi lấy Cloudflare URL
+    wait_for_comfy(port=8188, gpu_id=0)
+    wait_for_comfy(port=8189, gpu_id=1)
 
     llm_url = open_cloudflare_tunnel(11434, "ollama_32b")
     comfy0_url = open_cloudflare_tunnel(8188, "comfy_gpu0")
