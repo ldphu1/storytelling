@@ -1,0 +1,32 @@
+{
+  "global_settings": {
+    "style_prefix": "cinematic 2.5D anime film still, Makoto Shinkai lighting, volumetric fog, highly detailed environment, 8k resolution, masterpiece",
+    "negative_prompt": "bad anatomy, deformed hands, extra fingers, blurry, lowres, watermark, text, signature, photorealistic 3d, mutated face"
+  },
+  "narrator": {
+    "voice_id": "vi-VN-NamMinhNeural",
+    "rate": "+5%"
+  },
+  "characters": {
+    "char_minh": {
+      "name": "Minh",
+      "voice_id": "vi-VN-NamMinhNeural",
+      "appearance_trigger": "a 22-year-old young man, short messy black hair, sharp dark eyes, wearing thin round glasses",
+      "default_outfit": "wearing a dark navy blue oversized hoodie and black cargo pants",
+      "face_plate": "minh_face_plate.png",
+      "outfit_plate": "minh_outfit_plate.png",
+      "pulid_weight": 0.85,
+      "ipadapter_weight": 0.55
+    },
+    "char_linh": {
+      "name": "Linh",
+      "voice_id": "vi-VN-HoaiMyNeural",
+      "appearance_trigger": "a 20-year-old young woman, shoulder-length brown hair with bangs, gentle eyes",
+      "default_outfit": "wearing a beige trench coat over a white turtleneck sweater",
+      "face_plate": "linh_face_plate.png",
+      "outfit_plate": "linh_outfit_plate.png",
+      "pulid_weight": 0.85,
+      "ipadapter_weight": 0.55
+    }
+  }
+}
