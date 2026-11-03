@@ -23,8 +23,21 @@ class StoryScene(BaseModel):
     environment_prompt: str = Field(description="Mô tả bối cảnh và ánh sáng xung quanh bằng tiếng Anh")
     camera_motion: CameraMotion = Field(default="zoom_in", description="Hiệu ứng chuyển động camera")
 
+class StoryCharacter(BaseModel):
+    id: str = Field(description="Mã định danh, ví dụ: char_1, char_2")
+    name: str = Field(description="Tên nhân vật, ví dụ: Tiêu Phong, Tuấn Anh")
+    concept: str = Field(description="Concept tạo hình, ví dụ: Kiếm hiệp cổ trang, Cyberpunk hacker, Học sinh thanh xuân")
+    appearance_prompt: str = Field(description="Prompt tiếng Anh mô tả chi tiết khuôn mặt, kiểu tóc, độ tuổi")
+    default_outfit: str = Field(description="Prompt tiếng Anh mô tả trang phục đặc trưng")
+    voice_id: str = Field(default="vi-VN-NamMinhNeural", description="Giọng đọc Edge-TTS")
+    face_plate: Optional[str] = Field(default=None, description="Tên file ảnh mặt, vd: char_1_face.png")
+    outfit_plate: Optional[str] = Field(default=None, description="Tên file ảnh trang phục, vd: char_1_outfit.png")
+    pulid_weight: float = Field(default=0.75, ge=0.0, le=1.0)
+    ipadapter_weight: float = Field(default=0.50, ge=0.0, le=1.0)
+
 class StoryScriptResponse(BaseModel):
     title: str = Field(description="Tiêu đề câu chuyện")
+    characters: List[StoryCharacter] = Field(default_factory=list, description="Danh sách nhân vật trong câu chuyện kèm Concept")
     scenes: List[StoryScene] = Field(description="Danh sách các phân cảnh theo thứ tự thời gian")
 
 class CharacterProfile(BaseModel):

@@ -60,3 +60,49 @@ def test_workflow_template_node_ids():
     # 18: face_lock (IPAdapterFaceID), 21: outfit_lock (IPAdapterAdvanced), 3: ksampler, 9: save_img
     for node_id in ["6", "7", "12", "15", "18", "21", "3", "9"]:
         assert node_id in wf, f"Node {node_id} missing from workflow API JSON"
+
+def test_story_character_schema():
+    from app.models.schema import StoryCharacter
+    char = StoryCharacter(
+        id="char_custom_1",
+        name="Lâm Phong",
+        concept="Kiếm khách lãng tử thời phong kiến",
+        appearance_prompt="a 25-year-old wandering swordsman with a bamboo hat",
+        default_outfit="wearing a worn grey linen robe and straw sandals",
+        voice_id="vi-VN-NamMinhNeural"
+    )
+    assert char.id == "char_custom_1"
+    assert char.concept == "Kiếm khách lãng tử thời phong kiến"
+    assert char.pulid_weight == 0.75
+    assert char.ipadapter_weight == 0.50
+
+def test_story_script_response_with_dynamic_characters():
+    from app.models.schema import StoryCharacter
+    script = StoryScriptResponse(
+        title="Truyền Thuyết Kiếm Khách",
+        characters=[
+            StoryCharacter(
+                id="char_1",
+                name="Lâm Phong",
+                concept="Kiếm hiệp",
+                appearance_prompt="swordsman face",
+                default_outfit="linen robe"
+            )
+        ],
+        scenes=[
+            StoryScene(
+                scene_id=1,
+                narration="Gió thổi qua thảo nguyên",
+                has_character=True,
+                character_id="char_1",
+                shot_type="medium portrait shot",
+                action_prompt="standing with sword",
+                environment_prompt="windy grassland",
+                camera_motion="zoom_in"
+            )
+        ]
+    )
+    assert len(script.characters) == 1
+    assert script.characters[0].concept == "Kiếm hiệp"
+    assert script.scenes[0].character_id == "char_1"
+
