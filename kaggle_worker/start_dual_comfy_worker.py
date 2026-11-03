@@ -9,6 +9,7 @@ Chia sẻ VRAM theo pha thời gian (Time-Shared VRAM Eviction)
 import os
 import re
 import time
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -30,6 +31,13 @@ def setup_all_services():
 
     print("\n[*] 2/4: Đang cài đặt Ollama Engine...")
     if not Path("/usr/local/bin/ollama").exists() and not Path("/usr/bin/ollama").exists():
+        # Ollama phiên bản mới yêu cầu zstd để giải nén
+        if not shutil.which("zstd"):
+            print("[*] Đang cài đặt thư viện zstd để giải nén Ollama...")
+            try:
+                run_cmd("apt-get update -qq && apt-get install -y -qq zstd")
+            except Exception:
+                run_cmd("sudo apt-get update -qq && sudo apt-get install -y -qq zstd")
         run_cmd("curl -fsSL https://ollama.com/install.sh | sh")
 
     # Symlink cache model từ Kaggle Dataset nếu có (nạp trong 0 giây)
