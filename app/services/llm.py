@@ -333,11 +333,11 @@ class TimeSharedKaggleDirector:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            "stream": False,
+            "stream": True,
             "format": schema_model.model_json_schema(),
             "options": {
                 "temperature": 0.65,
-                "num_ctx": 16384,      # Cửa sổ ngữ cảnh 16k đã được tối ưu bằng KV Cache q8_0
+                "num_ctx": 8192,       # 8192 tokens nạp nhanh và tăng tốc suy luận trên 2xT4
                 "num_predict": 4096    # Đủ rộng cho 15 phân cảnh JSON trong 1 Hồi
             },
             "keep_alive": "15m"        # Giữ model trong VRAM xuyên suốt 5 vòng lặp Hồi
@@ -346,9 +346,25 @@ class TimeSharedKaggleDirector:
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
-        resp = requests.post(f"{self.ollama_url}/api/chat", json=payload, headers=headers, timeout=300)
+        resp = requests.post(
+            f"{self.ollama_url}/api/chat",
+            json=payload,
+            headers=headers,
+            stream=True,
+            timeout=600
+        )
         resp.raise_for_status()
-        content = resp.json()["message"]["content"].strip()
+        
+        full_content = []
+        for line in resp.iter_lines():
+            if line:
+                chunk = json.loads(line.decode("utf-8"))
+                msg = chunk.get("message", {}).get("content", "")
+                if msg:
+                    full_content.append(msg)
+                if chunk.get("done", False):
+                    break
+        content = "".join(full_content).strip()
         m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content)
         if m:
             content = m.group(1).strip()

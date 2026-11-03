@@ -114,6 +114,14 @@ def start_ollama_dual_gpu():
 
     print(f"[*] Đang kiểm tra/nạp trọng số {LLM_MODEL_NAME}...")
     run_cmd(f"ollama pull {LLM_MODEL_NAME}", env=env)
+
+    print(f"[*] Nạp trước (Pre-warm) model {LLM_MODEL_NAME} vào 2xT4 VRAM...")
+    try:
+        run_cmd(f'ollama run {LLM_MODEL_NAME} "khởi động" --keepalive 15m', env=env)
+        print("[+] Model 32B đã sẵn sàng trong VRAM!")
+    except Exception as e:
+        print(f"[!] Pre-warming warning: {e}")
+
     return proc
 
 def start_comfy_worker(gpu_id: int, port: int):
