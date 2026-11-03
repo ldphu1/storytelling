@@ -1,11 +1,21 @@
 import json
 import re
+import time
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 import requests
+from pydantic import BaseModel
 from loguru import logger
 
-from app.models.schema import StoryScene, StoryScriptResponse, StoryCharacter, CharacterBible
+from app.models.schema import (
+    StoryScene,
+    StoryScriptResponse,
+    StoryCharacter,
+    CharacterBible,
+    MasterBeatSheet,
+    ActBeat,
+    ActScenesBatch
+)
 from app.config import get_config
 
 def generate_mock_story_scenes(topic: str, scene_count: int = 5) -> StoryScriptResponse:
@@ -252,3 +262,210 @@ Trả về duy nhất định dạng JSON khớp với cấu trúc sau:
     raw_content = resp.json()["choices"][0]["message"]["content"]
     parsed_json = _extract_json_from_text(raw_content)
     return StoryScriptResponse(**parsed_json)
+
+
+class TimeSharedKaggleDirector:
+    """
+    Điều phối việc vận hành mô hình ngôn ngữ lớn (Qwen-2.5-32B) trên Kaggle 2xT4,
+    thực hiện phân bổ VRAM theo pha và giải phóng triệt để VRAM (evict) trước khi bàn giao cho ComfyUI.
+    """
+    def __init__(
+        self,
+        ollama_url: str,
+        comfy_urls: List[str],
+        model_name: str = "qwen2.5:32b-instruct-q4_K_M",
+        bible_path: str = "resource/character_bible/characters.json"
+    ):
+        self.ollama_url = (ollama_url or "").rstrip("/")
+        self.comfy_urls = [(u or "").rstrip("/") for u in comfy_urls if u]
+        self.model_name = model_name
+        bp = Path(bible_path)
+        if bp.exists():
+            with open(bp, "r", encoding="utf-8") as f:
+                self.bible = json.load(f)
+        else:
+            self.bible = {"characters": {}}
+
+    def free_comfyui_vram_before_llm(self):
+        """
+        Đảm bảo nếu trước đó ComfyUI đã chạy ở task cũ thì ép ComfyUI xả hết model khỏi VRAM
+        trước khi nạp Qwen-2.5-32B lên 2 card T4.
+        """
+        for url in self.comfy_urls:
+            try:
+                requests.post(
+                    f"{url}/free",
+                    json={"unload_models": True, "free_memory": True},
+                    timeout=10
+                )
+            except Exception as e:
+                logger.warning(f"Không thể gọi /free trên ComfyUI {url}: {e}")
+        time.sleep(1.5)
+
+    def evict_llm_from_kaggle_vram(self):
+        """
+        BƯỚC QUAN TRỌNG NHẤT CỦA CHIẾN LƯỢC 1:
+        Gửi keep_alive=0 để ép Ollama gỡ ngay lập tức trọng số Qwen-32B khỏi 2 GPU T4,
+        nhường lại 100% VRAM (32GB) cho 2 instance ComfyUI bắt đầu vẽ ảnh.
+        """
+        logger.info("[VRAM Handover] Đang gửi lệnh giải phóng Qwen-32B khỏi VRAM Kaggle...")
+        try:
+            resp = requests.post(
+                f"{self.ollama_url}/api/generate",
+                json={"model": self.model_name, "keep_alive": 0},
+                timeout=30
+            )
+            resp.raise_for_status()
+            # Đợi 2 giây để CUDA driver trên Kaggle thu hồi toàn bộ bộ nhớ
+            time.sleep(2.0)
+            logger.success("[VRAM Handover] Đã giải phóng hoàn toàn VRAM trên Kaggle! Sẵn sàng cho ComfyUI.")
+        except Exception as e:
+            logger.error(f"Lỗi khi giải phóng VRAM Ollama: {e}")
+
+    def _call_ollama_structured(self, system_prompt: str, user_prompt: str, schema_model: type[BaseModel]) -> str:
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "stream": False,
+            "format": schema_model.model_json_schema(),
+            "options": {
+                "temperature": 0.65,
+                "num_ctx": 16384,      # Cửa sổ ngữ cảnh 16k đã được tối ưu bằng KV Cache q8_0
+                "num_predict": 4096    # Đủ rộng cho 15 phân cảnh JSON trong 1 Hồi
+            },
+            "keep_alive": "15m"        # Giữ model trong VRAM xuyên suốt 5 vòng lặp Hồi
+        }
+        resp = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=300)
+        resp.raise_for_status()
+        content = resp.json()["message"]["content"].strip()
+        m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content)
+        if m:
+            content = m.group(1).strip()
+        return content
+
+    def generate_full_10min_script(self, topic: str, checkpoint_dir: Path) -> List[StoryScene]:
+        """
+        Điều phối sinh kịch bản 10 phút (~70 phân cảnh) qua 5 Hồi có lưu Checkpoint từng Hồi,
+        sau đó tự động xả sạch VRAM trong khối finally.
+        """
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        final_script_file = checkpoint_dir / "full_script_checkpoint.json"
+
+        # Nếu kịch bản đã được sinh thành công ở lần chạy trước thì đọc luôn từ ổ cứng
+        if final_script_file.exists():
+            logger.info("[Checkpoint] Đã tìm thấy kịch bản hoàn chỉnh trên máy Local, bỏ qua Pha LLM.")
+            raw_list = json.loads(final_script_file.read_text(encoding="utf-8"))
+            return [StoryScene.model_validate(item) for item in raw_list]
+
+        # Giải phóng VRAM của ComfyUI (nếu có từ phiên trước) trước khi load LLM 32B
+        self.free_comfyui_vram_before_llm()
+
+        all_scenes: List[StoryScene] = []
+        char_summary = json.dumps(self.bible.get("characters", {}), ensure_ascii=False)
+
+        try:
+            # -----------------------------------------------------------------
+            # BƯỚC 1: LẬP ĐỀ CƯƠNG 5 HỒI (MASTER BEAT SHEET)
+            # -----------------------------------------------------------------
+            logger.info(f"[Pha 1 - LLM 32B] Đang lập cấu trúc 5 Hồi (Beat Sheet) cho chủ đề: '{topic}'...")
+            beat_sys = (
+                "Bạn là Đạo diễn Điện ảnh AI. Hãy thiết kế cấu trúc kịch bản 10 phút gồm đúng 5 Hồi (Acts). "
+                "Mỗi Hồi phải có một không gian cố định (location_anchor) và ánh sáng cố định (lighting_anchor) bằng tiếng Anh."
+            )
+            beat_user = f"Chủ đề câu chuyện: {topic}\nDanh sách nhân vật: {char_summary}"
+            beat_json = self._call_ollama_structured(beat_sys, beat_user, MasterBeatSheet)
+            beat_sheet = MasterBeatSheet.model_validate_json(beat_json)
+            (checkpoint_dir / "master_beat_sheet.json").write_text(beat_sheet.model_dump_json(indent=2), encoding="utf-8")
+            logger.success(f"Đã tạo xong Beat Sheet: '{beat_sheet.video_title}' ({len(beat_sheet.acts)} Hồi)")
+
+            # -----------------------------------------------------------------
+            # BƯỚC 2: TRIỂN KHAI CHI TIẾT TỪNG HỒI VỚI ROLLING CONTEXT
+            # -----------------------------------------------------------------
+            global_scene_counter = 1
+            available_char_keys = list(self.bible.get("characters", {}).keys()) or ["char_1", "char_2"]
+            for act in beat_sheet.acts:
+                act_ckpt = checkpoint_dir / f"act_{act.act_id:02d}_scenes.json"
+                if act_ckpt.exists():
+                    logger.info(f"[Checkpoint] Đọc lại Hồi {act.act_id} từ cache...")
+                    act_batch = ActScenesBatch.model_validate_json(act_ckpt.read_text(encoding="utf-8"))
+                else:
+                    logger.info(f"[Pha 1 - LLM 32B] Đang đạo diễn chi tiết Hồi {act.act_id}/{len(beat_sheet.acts)}: '{act.act_title}'...")
+                    # Lấy 3 phân cảnh cuối của Hồi trước làm Rolling Context
+                    rolling_tail = [s.model_dump() for s in all_scenes[-3:]] if all_scenes else []
+
+                    act_sys = f"""
+                    Bạn là Đạo diễn Hình ảnh & Biên kịch. Hãy viết chi tiết {act.target_scenes} phân cảnh cho Hồi {act.act_id}.
+                    QUY TẮC BẮT BUỘC:
+                    1. Bối cảnh cố định của Hồi này: "{act.location_anchor}".
+                    2. Ánh sáng cố định của Hồi này: "{act.lighting_anchor}".
+                       -> Mọi trường `environment_prompt` trong Hồi này PHẢI giữ nguyên không gian và ánh sáng trên!
+                    3. Quy tắc Shot-Reverse-Shot: Mỗi cảnh chỉ có TỐI ĐA 1 nhân vật (`character_id` là một trong {available_char_keys}).
+                       Khi 2 nhân vật đối thoại, hãy cắt cảnh luân phiên giữa 2 người.
+                    4. Đặt `has_character = false` cho khoảng 20% số cảnh để làm cảnh B-Roll đặc tả không gian/đồ vật.
+                    5. Lời bình `narration` bằng tiếng Việt tự nhiên, mọi con số phải viết bằng chữ.
+                    """
+                    act_user = (
+                        f"Tóm tắt Hồi {act.act_id}: {act.plot_summary}\n"
+                        f"3 phân cảnh cuối của Hồi trước (để nối tiếp mạch truyện): {json.dumps(rolling_tail, ensure_ascii=False)}"
+                    )
+
+                    batch_json = self._call_ollama_structured(act_sys, act_user, ActScenesBatch)
+                    act_batch = ActScenesBatch.model_validate_json(batch_json)
+                    act_ckpt.write_text(act_batch.model_dump_json(indent=2), encoding="utf-8")
+
+                # Đánh lại số thứ tự scene_id liên tục từ 1 đến ~70
+                for sc in act_batch.scenes:
+                    sc.scene_id = global_scene_counter
+                    global_scene_counter += 1
+                    all_scenes.append(sc)
+
+            # Lưu toàn bộ kịch bản hoàn chỉnh xuống ổ cứng Local
+            final_script_file.write_text(
+                json.dumps([s.model_dump() for s in all_scenes], ensure_ascii=False, indent=2),
+                encoding="utf-8"
+            )
+            logger.success(f"Hoàn tất kịch bản 10 phút với tổng cộng {len(all_scenes)} phân cảnh đồng nhất!")
+            return all_scenes
+
+        finally:
+            # -----------------------------------------------------------------
+            # BƯỚC 3: LUÔN LUÔN XẢ SẠCH VRAM TRƯỚC KHI CHUYỂN SANG COMFYUI
+            # -----------------------------------------------------------------
+            self.evict_llm_from_kaggle_vram()
+
+    def generate_full_10min_story(self, topic: str, checkpoint_dir: Path) -> StoryScriptResponse:
+        """Sinh StoryScriptResponse hoàn chỉnh sẵn sàng cho pipeline."""
+        scenes = self.generate_full_10min_script(topic, checkpoint_dir)
+        title = topic
+        sheet_file = checkpoint_dir / "master_beat_sheet.json"
+        if sheet_file.exists():
+            try:
+                sheet = MasterBeatSheet.model_validate_json(sheet_file.read_text(encoding="utf-8"))
+                title = sheet.video_title or topic
+            except Exception:
+                pass
+        chars = []
+        if "characters" in self.bible:
+            for cid, cdata in self.bible["characters"].items():
+                chars.append(
+                    StoryCharacter(
+                        id=cid,
+                        name=cdata.get("name", cid),
+                        concept=cdata.get("concept", "Nhân vật chính"),
+                        appearance_prompt=cdata.get("appearance_trigger", ""),
+                        default_outfit=cdata.get("default_outfit", ""),
+                        voice_id=cdata.get("voice_id", "vi-VN-NamMinhNeural"),
+                        face_plate=cdata.get("face_plate"),
+                        outfit_plate=cdata.get("outfit_plate"),
+                        pulid_weight=cdata.get("pulid_weight", 0.75),
+                        ipadapter_weight=cdata.get("ipadapter_weight", 0.50)
+                    )
+                )
+        return StoryScriptResponse(
+            title=title,
+            characters=chars,
+            scenes=scenes
+        )

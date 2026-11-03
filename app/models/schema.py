@@ -1,13 +1,14 @@
 import json
 from pathlib import Path
 from typing import List, Literal, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 ShotType = Literal[
     "extreme close-up shot",
     "medium portrait shot",
     "cowboy shot",
     "wide environmental shot",
+    "over-the-shoulder shot",
     "low angle dramatic shot"
 ]
 
@@ -18,10 +19,22 @@ class StoryScene(BaseModel):
     narration: str = Field(description="Lời dẫn truyện tiếng Việt tự nhiên, không chứa từ viết tắt")
     has_character: bool = Field(description="True nếu cảnh này có mặt nhân vật, False nếu là cảnh B-Roll ngoại cảnh")
     character_id: str = Field(default="char_minh", description="Mã nhân vật xuất hiện trong cảnh (VD: char_minh, char_linh)")
+    active_character_id: Optional[str] = Field(default=None, description="Tùy chọn tương thích cho active_character_id")
+    speaker_id: str = Field(default="narrator", description="Ai đang nói ở cảnh này ('narrator', 'char_minh', 'char_linh')")
     shot_type: ShotType = Field(default="medium portrait shot", description="Góc máy điện ảnh")
     action_prompt: str = Field(description="Mô tả hành động và biểu cảm bằng tiếng Anh")
     environment_prompt: str = Field(description="Mô tả bối cảnh và ánh sáng xung quanh bằng tiếng Anh")
     camera_motion: CameraMotion = Field(default="zoom_in", description="Hiệu ứng chuyển động camera")
+
+    @model_validator(mode="before")
+    @classmethod
+    def sync_character_fields(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if data.get("active_character_id") and ("character_id" not in data or data.get("character_id") == "char_minh"):
+                data["character_id"] = data["active_character_id"]
+            elif data.get("character_id") and not data.get("active_character_id"):
+                data["active_character_id"] = data["character_id"]
+        return data
 
 class StoryCharacter(BaseModel):
     id: str = Field(description="Mã định danh, ví dụ: char_1, char_2")
