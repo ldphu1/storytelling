@@ -15,8 +15,8 @@
       "default_outfit": "wearing a dark navy blue oversized hoodie and black cargo pants",
       "face_plate": "minh_face_plate.png",
       "outfit_plate": "minh_outfit_plate.png",
-      "pulid_weight": 0.85,
-      "ipadapter_weight": 0.55
+      "pulid_weight": 0.75,
+      "ipadapter_weight": 0.50
     },
     "char_linh": {
       "name": "Linh",
@@ -25,8 +25,8 @@
       "default_outfit": "wearing a beige trench coat over a white turtleneck sweater",
       "face_plate": "linh_face_plate.png",
       "outfit_plate": "linh_outfit_plate.png",
-      "pulid_weight": 0.85,
-      "ipadapter_weight": 0.55
+      "pulid_weight": 0.75,
+      "ipadapter_weight": 0.50
     }
   }
 }

@@ -39,8 +39,8 @@ def test_build_workflow_payload_character_scene(client):
     assert wf["15"]["inputs"]["image"] == "minh_outfit_plate.png"
     
     # Weights active
-    assert wf["18"]["inputs"]["weight"] == 0.85
-    assert wf["21"]["inputs"]["weight"] == 0.55
+    assert wf["18"]["inputs"]["weight"] == 0.75
+    assert wf["21"]["inputs"]["weight"] == 0.50
 
 def test_broll_scene_disables_ipadapter_weights(client):
     scene = {
