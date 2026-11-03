@@ -1,4 +1,5 @@
 import json
+import time
 import pytest
 from pathlib import Path
 from PIL import Image
@@ -76,7 +77,49 @@ def test_render_zoompan_nvenc(tmp_path):
     assert out_video.stat().st_size > 1024  # video > 1KB hợp lệ
 
 @pytest.mark.asyncio
+async def test_nvenc_semaphore_concurrency_limit(tmp_path):
+    # Kiểm tra đảm bảo số lượng tiến trình render đồng thời không vượt quá nvenc_max_concurrency
+    client = DualGPUComfyStoryClient(
+        worker_urls=[],
+        workflow_path="resource/workflows/pulid_ipadapter_api.json",
+        bible_path="resource/character_bible/characters.json"
+    )
+    client.nvenc_max_concurrency = 2
+    
+    current_concurrency = 0
+    max_concurrency_observed = 0
+    
+    orig_zoompan = client._render_zoompan_nvenc
+    def tracking_zoompan(*args, **kwargs):
+        nonlocal current_concurrency, max_concurrency_observed
+        current_concurrency += 1
+        if current_concurrency > max_concurrency_observed:
+            max_concurrency_observed = current_concurrency
+        time.sleep(0.05)
+        res = orig_zoompan(*args, **kwargs)
+        current_concurrency -= 1
+        return res
+    
+    client._render_zoompan_nvenc = tracking_zoompan
+
+    scenes = [
+        {"scene_id": i, "has_character": False, "shot_type": "wide environmental shot", "action_prompt": "test", "environment_prompt": "test", "camera_motion": "zoom_in"}
+        for i in range(1, 5)
+    ]
+    durations = [1.0, 1.0, 1.0, 1.0]
+
+    await client.render_all_scenes_parallel(
+        task_dir=tmp_path,
+        scenes=scenes,
+        durations=durations,
+        dry_run=True
+    )
+
+    assert max_concurrency_observed <= 2, f"Expected peak concurrency <= 2, got {max_concurrency_observed}"
+
+@pytest.mark.asyncio
 async def test_parallel_render_dry_run(tmp_path):
+
     client = DualGPUComfyStoryClient(
         worker_urls=[],
         workflow_path="resource/workflows/pulid_ipadapter_api.json",

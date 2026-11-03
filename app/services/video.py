@@ -6,10 +6,10 @@ from loguru import logger
 def get_safe_subtitle_path(subtitle_path: Path) -> str:
     r"""
     Chuẩn hóa và escape ký tự hai chấm (:) trên ổ đĩa Windows (VD: C:\ -> C\:/)
-    để FFmpeg không hiểu nhầm là ký tự phân tách filter parameter.
+    và dấu nháy đơn (') để FFmpeg không hiểu nhầm là ký tự phân tách filter parameter.
     """
     posix_path = subtitle_path.resolve().as_posix()
-    return posix_path.replace(":", r"\:")
+    return posix_path.replace(":", r"\:").replace("'", r"\'")
 
 def assemble_final_story_video_nvenc(
     scene_video_paths: List[str],

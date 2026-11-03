@@ -56,6 +56,8 @@ def default_edge_tts(text: str, voice_name: str, voice_file: Path, rate: str = "
             "-ar", "24000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k",
             str(voice_file)
         ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if raw_tmp.exists():
+            raw_tmp.unlink()
         return
 
     # Chuẩn hóa tần số lấy mẫu về 24000Hz mono
@@ -105,8 +107,19 @@ def synthesize_scenes_audio_and_subtitles(
 
         # Đo thời lượng thực tế của file MP3 chuẩn hóa
         dur = round(MP3(str(scene_audio)).info.length, 3)
-        # Đảm bảo thời lượng tối thiểu 1.0s cho mỗi cảnh
-        dur = max(dur, 1.0)
+        if dur < 1.0:
+            # Nếu câu quá ngắn, thêm đệm im lặng vào file audio để đạt tối thiểu 1.0s, tránh lệch đồng bộ với SRT
+            pad_dur = round(1.0 - dur, 3)
+            padded_audio = scene_audio.with_suffix(".padded.mp3")
+            subprocess.run([
+                "ffmpeg", "-y", "-i", str(scene_audio),
+                "-af", f"apad=pad_dur={pad_dur}",
+                "-ar", "24000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k",
+                str(padded_audio)
+            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            padded_audio.replace(scene_audio)
+            dur = 1.0
+
         durations.append(dur)
         audio_files.append(scene_audio)
 

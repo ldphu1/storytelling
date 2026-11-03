@@ -30,16 +30,22 @@ def setup_environment():
         # Cài đặt insightface và onnxruntime-gpu
         subprocess.run([sys.executable, "-m", "pip", "install", "-q", "insightface", "onnxruntime-gpu", "einops"], check=True)
 
-    # Kiểm tra bắt buộc: InsightFace phải chạy trên GPU (CUDAExecutionProvider)
-    try:
-        import onnxruntime as ort
-        providers = ort.get_available_providers()
-        print(f"[*] Available ONNX Providers: {providers}")
-        if "CUDAExecutionProvider" not in providers:
-            print("[!] CẢNH BÁO: CUDAExecutionProvider không xuất hiện! Đang thử cài lại onnxruntime-gpu...")
-            subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--force-reinstall", "onnxruntime-gpu"], check=True)
-    except Exception as e:
-        print(f"[!] Lỗi kiểm tra ONNX Runtime: {e}")
+    # Kiểm tra bắt buộc: InsightFace và ONNX Runtime phải chạy trên GPU (CUDAExecutionProvider)
+    check_ort_cmd = [
+        sys.executable, "-c",
+        "import onnxruntime as ort; p = ort.get_available_providers(); print(p); assert 'CUDAExecutionProvider' in p, 'CUDAExecutionProvider missing!'"
+    ]
+    res = subprocess.run(check_ort_cmd, capture_output=True, text=True)
+    if res.returncode != 0:
+        print("[!] CẢNH BÁO: CUDAExecutionProvider chưa khả dụng. Đang cài đặt onnxruntime-gpu tương thích CUDA...")
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--force-reinstall", "onnxruntime-gpu"], check=True)
+        # Kiểm tra lại lần 2
+        res2 = subprocess.run(check_ort_cmd, capture_output=True, text=True)
+        if res2.returncode != 0:
+            print(f"[!] Lỗi ONNX GPU: {res2.stderr}")
+            print("[!] InsightFace có thể sẽ chạy bằng CPU nếu thiếu cuDNN phù hợp.")
+    else:
+        print("[+] Xác nhận: ONNX Runtime đang kích hoạt CUDAExecutionProvider trên GPU T4!")
 
     # Tạo Symlink từ Kaggle Dataset (nạp 0 giây)
     print("\n[*] 2. Thiết lập bộ trọng số mô hình...")
@@ -67,15 +73,25 @@ def setup_environment():
         for p in mapping.values():
             p.mkdir(parents=True, exist_ok=True)
         
-        # Fallback wget weights nếu chưa kịp chuẩn bị dataset
-        ckpt_dest = mapping["checkpoints"] / "juggernautXL_v9Lightning.safetensors"
-        if not ckpt_dest.exists():
-            print("[*] Đang tải Juggernaut XL Lightning checkpoint...")
-            subprocess.run([
-                "wget", "-q", "-c",
-                "https://huggingface.co/RunDiffusion/Juggernaut-XL-Lightning/resolve/main/Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors",
-                "-O", str(ckpt_dest)
-            ], check=False)
+        # Fallback tải trực tiếp nếu chưa kịp gắn Kaggle Dataset
+        downloads = [
+            (
+                mapping["checkpoints"] / "juggernautXL_v9Lightning.safetensors",
+                "https://huggingface.co/RunDiffusion/Juggernaut-XL-Lightning/resolve/main/Juggernaut_RunDiffusionPhoto2_Lightning_4Steps.safetensors"
+            ),
+            (
+                mapping["ipadapter"] / "ip-adapter-plus_sdxl_vit-h.safetensors",
+                "https://huggingface.co/h94/IP-Adapter/resolve/main/sdxl_models/ip-adapter-plus_sdxl_vit-h.safetensors"
+            ),
+            (
+                mapping["clip_vision"] / "CLIP-ViT-H-14-laion2B-s32B-b79K.safetensors",
+                "https://huggingface.co/h94/IP-Adapter/resolve/main/models/image_encoder/model.safetensors"
+            )
+        ]
+        for dest, url in downloads:
+            if not dest.exists():
+                print(f"[*] Đang tải fallback: {dest.name}...")
+                subprocess.run(["wget", "-q", "-c", url, "-O", str(dest)], check=False)
 
     # Cài đặt Cloudflared
     print("\n[*] 3. Thiết lập Cloudflare Tunnel...")
@@ -128,4 +144,10 @@ if __name__ == "__main__":
     print("=" * 70)
     print("[+] Hãy copy 2 đường dẫn trên dán vào WebUI (hoặc config.toml) trên máy Local.")
     print("=" * 70 + "\n")
-    proc0.wait()
+    try:
+        proc0.wait()
+    except KeyboardInterrupt:
+        print("\n[*] Đang tắt các tiến trình ComfyUI...")
+    finally:
+        proc0.terminate()
+        proc1.terminate()

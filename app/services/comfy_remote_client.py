@@ -12,6 +12,8 @@ from loguru import logger
 
 from app.config import get_config
 
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+
 class DualGPUComfyStoryClient:
     def __init__(
         self,
@@ -21,8 +23,12 @@ class DualGPUComfyStoryClient:
     ):
         cfg = get_config()
         self.worker_urls = [url.rstrip("/") for url in (worker_urls or cfg.worker_urls)]
-        self.workflow_path = Path(workflow_path)
-        self.bible_path = Path(bible_path)
+        
+        wf_p = Path(workflow_path)
+        self.workflow_path = wf_p if wf_p.is_absolute() else (ROOT_DIR / wf_p)
+        
+        b_p = Path(bible_path)
+        self.bible_path = b_p if b_p.is_absolute() else (ROOT_DIR / b_p)
         self.bible_dir = self.bible_path.parent
         
         with open(self.bible_path, "r", encoding="utf-8") as f:
@@ -185,59 +191,66 @@ class DualGPUComfyStoryClient:
             ]
             subprocess.run(cmd_cpu, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, check=True)
 
-    def _render_single_scene_sync(
+    def _ensure_scene_image_sync(
         self,
         worker_url: Optional[str],
         scene: Dict[str, Any],
         output_img_path: Path,
+        dry_run: bool = False
+    ) -> Path:
+        """Sinh hoặc tải ảnh cho phân cảnh nếu chưa tồn tại (Checkpoint)."""
+        if output_img_path.exists() and output_img_path.stat().st_size > 1024:
+            return output_img_path
+
+        if dry_run or not worker_url:
+            logger.info(f"[Dry-Run] Tạo ảnh giả lập cho Cảnh {scene['scene_id']}...")
+            self._create_placeholder_image(scene, output_img_path)
+            return output_img_path
+
+        logger.info(f"Đang gửi Cảnh {scene['scene_id']} tới ComfyUI worker ({worker_url})...")
+        wf_payload = self._build_workflow_payload(scene)
+        client_id = str(uuid.uuid4())
+        resp = requests.post(
+            f"{worker_url}/prompt",
+            json={"prompt": wf_payload, "client_id": client_id},
+            timeout=30
+        )
+        resp.raise_for_status()
+        prompt_id = resp.json()["prompt_id"]
+
+        while True:
+            hist = requests.get(f"{worker_url}/history/{prompt_id}", timeout=30).json()
+            if prompt_id in hist:
+                img_meta = hist[prompt_id]["outputs"][self.NODES["save_img"]]["images"][0]
+                img_bytes = requests.get(
+                    f"{worker_url}/view",
+                    params={
+                        "filename": img_meta["filename"],
+                        "subfolder": img_meta["subfolder"],
+                        "type": img_meta["type"]
+                    },
+                    timeout=60
+                ).content
+                output_img_path.parent.mkdir(parents=True, exist_ok=True)
+                output_img_path.write_bytes(img_bytes)
+                logger.success(f"Đã tải thành công ảnh Cảnh {scene['scene_id']} từ {worker_url}")
+                break
+            time.sleep(1.2)
+        return output_img_path
+
+    def _render_scene_video_sync(
+        self,
+        scene: Dict[str, Any],
+        output_img_path: Path,
         output_vid_path: Path,
         duration: float,
-        aspect_ratio: str,
-        dry_run: bool = False
+        aspect_ratio: str
     ) -> str:
-        """Thực thi sinh ảnh và render video phân cảnh có kiểm tra Checkpoint."""
-        # 1. Idempotent Checkpoint: Nếu file video phân cảnh đã có sẵn và hợp lệ thì bỏ qua ngay
+        """Tạo chuyển động camera video từ ảnh nếu chưa tồn tại (Checkpoint)."""
         if output_vid_path.exists() and output_vid_path.stat().st_size > 1024:
             logger.info(f"[Checkpoint] Bỏ qua Cảnh {scene['scene_id']} vì {output_vid_path.name} đã hoàn thành.")
             return str(output_vid_path)
 
-        # 2. Sinh ảnh nếu chưa có
-        if not (output_img_path.exists() and output_img_path.stat().st_size > 1024):
-            if dry_run or not worker_url:
-                logger.info(f"[Dry-Run] Tạo ảnh giả lập cho Cảnh {scene['scene_id']}...")
-                self._create_placeholder_image(scene, output_img_path)
-            else:
-                logger.info(f"Đang gửi Cảnh {scene['scene_id']} tới ComfyUI worker ({worker_url})...")
-                wf_payload = self._build_workflow_payload(scene)
-                client_id = str(uuid.uuid4())
-                resp = requests.post(
-                    f"{worker_url}/prompt",
-                    json={"prompt": wf_payload, "client_id": client_id},
-                    timeout=30
-                )
-                resp.raise_for_status()
-                prompt_id = resp.json()["prompt_id"]
-
-                while True:
-                    hist = requests.get(f"{worker_url}/history/{prompt_id}", timeout=30).json()
-                    if prompt_id in hist:
-                        img_meta = hist[prompt_id]["outputs"][self.NODES["save_img"]]["images"][0]
-                        img_bytes = requests.get(
-                            f"{worker_url}/view",
-                            params={
-                                "filename": img_meta["filename"],
-                                "subfolder": img_meta["subfolder"],
-                                "type": img_meta["type"]
-                            },
-                            timeout=60
-                        ).content
-                        output_img_path.parent.mkdir(parents=True, exist_ok=True)
-                        output_img_path.write_bytes(img_bytes)
-                        logger.success(f"Đã tải thành công ảnh Cảnh {scene['scene_id']} từ {worker_url}")
-                        break
-                    time.sleep(1.2)
-
-        # 3. Tạo chuyển động camera video từ ảnh
         logger.info(f"Đang render hiệu ứng camera cho Cảnh {scene['scene_id']} ({duration:.2f}s)...")
         self._render_zoompan_nvenc(
             image_path=output_img_path,
@@ -256,7 +269,11 @@ class DualGPUComfyStoryClient:
         aspect_ratio: str = "16:9",
         dry_run: bool = False
     ) -> List[str]:
-        """Chia tải bất đồng bộ chẵn lẻ lên Dual-GPU Kaggle với Semaphore kép."""
+        """
+        Chia tải bất đồng bộ chuẩn:
+        - comfy_sem: Điều tiết số request đồng thời tới Cloudflare / Kaggle Workers.
+        - nvenc_sem: Tách biệt điều tiết số tiến trình FFmpeg zoompan chạy trên GPU/CPU local.
+        """
         task_dir.mkdir(parents=True, exist_ok=True)
         if not dry_run and self.worker_urls:
             self.sync_character_plates_to_workers()
@@ -265,25 +282,27 @@ class DualGPUComfyStoryClient:
         comfy_sem = asyncio.Semaphore(self.comfy_max_concurrency)
         nvenc_sem = asyncio.Semaphore(self.nvenc_max_concurrency)
 
-        async def _worker_task(idx: int, scene: Dict[str, Any], dur: float) -> str:
+        async def _process_single_scene(idx: int, scene: Dict[str, Any], dur: float) -> str:
             worker_url = self.worker_urls[idx % num_workers] if self.worker_urls else None
             img_out = task_dir / f"scene_{scene['scene_id']:03d}.png"
             vid_out = task_dir / f"scene_{scene['scene_id']:03d}.mp4"
 
-            # Giới hạn số kết nối tới ComfyUI Worker
+            # 1. Sinh / tải ảnh với giới hạn comfy_sem
             async with comfy_sem:
-                # Nếu chưa có ảnh thì lấy ảnh từ worker hoặc placeholder
-                pass
+                await asyncio.to_thread(
+                    self._ensure_scene_image_sync,
+                    worker_url, scene, img_out, dry_run
+                )
 
-            # Giới hạn số tiến trình FFmpeg zoompan cùng lúc trên Local GPU/CPU
+            # 2. Render NVENC video với giới hạn nvenc_sem
             async with nvenc_sem:
                 return await asyncio.to_thread(
-                    self._render_single_scene_sync,
-                    worker_url, scene, img_out, vid_out, dur, aspect_ratio, dry_run
+                    self._render_scene_video_sync,
+                    scene, img_out, vid_out, dur, aspect_ratio
                 )
 
         tasks = [
-            _worker_task(i, sc, dur)
+            _process_single_scene(i, sc, dur)
             for i, (sc, dur) in enumerate(zip(scenes, durations))
         ]
         return await asyncio.gather(*tasks)
