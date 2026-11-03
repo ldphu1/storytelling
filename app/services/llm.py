@@ -313,6 +313,10 @@ class TimeSharedKaggleDirector:
             resp = requests.post(
                 f"{self.ollama_url}/api/generate",
                 json={"model": self.model_name, "keep_alive": 0},
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                },
                 timeout=30
             )
             resp.raise_for_status()
@@ -338,7 +342,11 @@ class TimeSharedKaggleDirector:
             },
             "keep_alive": "15m"        # Giữ model trong VRAM xuyên suốt 5 vòng lặp Hồi
         }
-        resp = requests.post(f"{self.ollama_url}/api/chat", json=payload, timeout=300)
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        resp = requests.post(f"{self.ollama_url}/api/chat", json=payload, headers=headers, timeout=300)
         resp.raise_for_status()
         content = resp.json()["message"]["content"].strip()
         m = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", content)

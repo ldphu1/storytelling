@@ -101,7 +101,8 @@ def start_ollama_dual_gpu():
     print("\n[*] 4/4: Khởi chạy Ollama Server trên cả 2 GPU (cuda:0,1)...")
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = "0,1"
-    env["OLLAMA_HOST"] = "127.0.0.1:11434"
+    env["OLLAMA_HOST"] = "0.0.0.0:11434"
+    env["OLLAMA_ORIGINS"] = "*"
     env["OLLAMA_FLASH_ATTENTION"] = "1"
     env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
     env["OLLAMA_NUM_PARALLEL"] = "1"
@@ -137,7 +138,11 @@ def open_cloudflare_tunnel(local_port: int, name: str) -> str:
     log_path = WORKSPACE / f"tunnel_{name}.log"
     with open(log_path, "w") as f:
         subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{local_port}"],
+            [
+                "cloudflared", "tunnel",
+                "--url", f"http://127.0.0.1:{local_port}",
+                "--http-host-header", f"127.0.0.1:{local_port}"
+            ],
             stdout=f,
             stderr=subprocess.STDOUT
         )
