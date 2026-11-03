@@ -3,6 +3,14 @@ import argparse
 import subprocess
 from pathlib import Path
 
+# Đảm bảo Windows console luôn in đúng ký tự tiếng Việt UTF-8
+if sys.platform.startswith("win"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Lean AI Storytelling Pipeline Orchestrator")
     parser.add_argument("--cli", action="store_true", help="Chạy ở chế độ dòng lệnh (CLI mode)")

@@ -192,10 +192,16 @@ with tab2:
         
         with col_face:
             if face_path.exists():
-                st.image(str(face_path), caption=f"Face Plate: {cdata.face_plate}", use_container_width=True)
+                try:
+                    st.image(str(face_path), caption=f"Face Plate: {cdata.face_plate}", width="stretch")
+                except TypeError:
+                    st.image(str(face_path), caption=f"Face Plate: {cdata.face_plate}", use_container_width=True)
         with col_outfit:
             if outfit_path.exists():
-                st.image(str(outfit_path), caption=f"Outfit Plate: {cdata.outfit_plate}", use_container_width=True)
+                try:
+                    st.image(str(outfit_path), caption=f"Outfit Plate: {cdata.outfit_plate}", width="stretch")
+                except TypeError:
+                    st.image(str(outfit_path), caption=f"Outfit Plate: {cdata.outfit_plate}", use_container_width=True)
         st.divider()
 
 # --- TAB 3: TRẠNG THÁI WORKER ---

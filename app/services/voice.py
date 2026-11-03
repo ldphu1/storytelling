@@ -27,9 +27,36 @@ def default_edge_tts(text: str, voice_name: str, voice_file: Path, rate: str = "
     """
     Sinh giọng đọc Edge-TTS và chuẩn hóa ngay sang 24000Hz Mono
     nhằm khử sai số đệm khung hình (frame padding) khi concat.
+    Tự động fallback sang vi-VN-HoaiMyNeural nếu giọng NamMinh bị lỗi phía Microsoft.
     """
     raw_tmp = voice_file.with_suffix(".raw.mp3")
-    asyncio.run(_edge_tts_async(text, voice_name, raw_tmp, rate=rate))
+    
+    # Danh sách thử nghiệm giọng đọc
+    candidate_voices = [voice_name]
+    if voice_name != "vi-VN-HoaiMyNeural":
+        candidate_voices.append("vi-VN-HoaiMyNeural")
+
+    success = False
+    for candidate in candidate_voices:
+        try:
+            asyncio.run(_edge_tts_async(text, candidate, raw_tmp, rate=rate))
+            if raw_tmp.exists() and raw_tmp.stat().st_size > 1024:
+                success = True
+                break
+        except Exception as e:
+            logger.warning(f"Giọng đọc {candidate} thất bại ({e}). Đang thử phương án tiếp theo...")
+
+    if not success:
+        # Fallback offline (sử dụng âm thanh tổng hợp giả lập nếu mất mạng hoặc Microsoft chặn endpoint)
+        logger.warning(f"Toàn bộ giọng Edge-TTS không khả dụng. Sử dụng fallback âm thanh tổng hợp cho: '{text[:30]}...'")
+        dur_est = max(1.5, len(text.split()) * 0.3)
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "lavfi",
+            "-i", f"sine=frequency=440:duration={dur_est:.2f}",
+            "-ar", "24000", "-ac", "1", "-c:a", "libmp3lame", "-b:a", "64k",
+            str(voice_file)
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        return
 
     # Chuẩn hóa tần số lấy mẫu về 24000Hz mono
     subprocess.run([
