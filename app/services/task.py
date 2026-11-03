@@ -9,7 +9,7 @@ from loguru import logger
 
 from app.config import AppConfig, get_config
 from app.models.schema import StoryScriptResponse, CharacterBible, CharacterProfile
-from app.services.llm import generate_story_scenes
+from app.services.llm import generate_story_scenes, TimeSharedKaggleDirector
 from app.services.voice import synthesize_scenes_audio_and_subtitles
 from app.services.comfy_remote_client import DualGPUComfyStoryClient
 from app.services.video import assemble_final_story_video_nvenc
@@ -25,11 +25,13 @@ def run_story_pipeline(
     character_bible_path: str = "resource/character_bible/characters.json",
     workflow_path: str = "resource/workflows/pulid_ipadapter_api.json",
     tts_backend: Optional[Callable[[str, str, Path], None]] = None,
-    voice_override: Optional[str] = None
+    voice_override: Optional[str] = None,
+    story_mode: str = "short",
+    ollama_worker_url: Optional[str] = None
 ) -> Path:
     """
     Hàm điều phối toàn bộ quy trình sản xuất video kể chuyện AI Scene-by-Scene:
-    1. Sinh kịch bản JSON qua LLM
+    1. Sinh kịch bản JSON qua LLM (hỗ trợ Time-Shared Kaggle Director cho kịch bản 10 phút)
     2. Tổng hợp giọng đọc TTS và ghép phụ đề đồng bộ
     3. Sinh ảnh qua ComfyUI Dual-GPU và chuyển động camera NVENC
     4. Đóng gói video thành phẩm kèm Audio Ducking
@@ -45,6 +47,8 @@ def run_story_pipeline(
 
     report("Khởi tạo phiên làm việc...", 0.05)
 
+    effective_ollama_url = ollama_worker_url or cfg.ollama_worker_url
+
     # 1. Kịch bản phân cảnh
     script_file = task_dir / "story_script.json"
     if custom_script:
@@ -52,6 +56,19 @@ def run_story_pipeline(
     elif script_file.exists():
         with open(script_file, "r", encoding="utf-8") as f:
             story_script = StoryScriptResponse(**json.load(f))
+    elif story_mode == "10min_multiact" or (effective_ollama_url and cfg.llm_provider == "ollama"):
+        report("Đang khởi động TimeSharedKaggleDirector (Qwen-32B Multi-Act)...", 0.12)
+        checkpoint_dir = task_dir / "llm_checkpoints"
+        director = TimeSharedKaggleDirector(
+            ollama_url=effective_ollama_url or cfg.llm_base_url,
+            comfy_urls=cfg.worker_urls,
+            model_name=cfg.llm_model if (cfg.llm_model and cfg.llm_model != "gpt-4o") else "qwen2.5:32b-instruct-q4_K_M",
+            bible_path=character_bible_path
+        )
+        story_script = director.generate_full_10min_story(
+            topic=topic,
+            checkpoint_dir=checkpoint_dir
+        )
     else:
         report("Đang sinh kịch bản phân cảnh từ LLM...", 0.15)
         story_script = generate_story_scenes(
@@ -91,6 +108,17 @@ def run_story_pipeline(
         tts_backend=tts_backend
     )
     report("Hoàn thành audio và phụ đề", 0.50)
+
+    # Đảm bảo VRAM đã được giải phóng sạch sẽ cho ComfyUI nếu có Ollama trên Kaggle
+    if effective_ollama_url and not dry_run:
+        try:
+            TimeSharedKaggleDirector(
+                ollama_url=effective_ollama_url,
+                comfy_urls=cfg.worker_urls,
+                model_name=cfg.llm_model if (cfg.llm_model and cfg.llm_model != "gpt-4o") else "qwen2.5:32b-instruct-q4_K_M"
+            ).evict_llm_from_kaggle_vram()
+        except Exception as e:
+            logger.warning(f"Cảnh báo khi chạy tiền kiểm tra xả VRAM Ollama: {e}")
 
     # 3. Kết xuất hình ảnh và chuyển động camera (ComfyUI + NVENC)
     report("Đang kết xuất hình ảnh và hiệu ứng camera phân cảnh...", 0.60)

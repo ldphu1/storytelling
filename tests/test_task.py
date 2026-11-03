@@ -116,3 +116,62 @@ def test_run_story_pipeline_with_dynamic_characters(tmp_path):
     char_dir = task_dir / "characters"
     assert (char_dir / "char_swordsman_face.png").exists()
     assert (char_dir / "char_swordsman_outfit.png").exists()
+
+def test_run_story_pipeline_time_shared_10min_mode(tmp_path):
+    from unittest.mock import patch, MagicMock
+    from app.services.llm import TimeSharedKaggleDirector
+    from app.models.schema import StoryScriptResponse, StoryScene, StoryCharacter
+
+    cfg = AppConfig(
+        storage_dir=tmp_path / "storage",
+        worker_urls=["https://gpu0.test", "https://gpu1.test"],
+        ollama_worker_url="https://ollama.test",
+        llm_provider="ollama"
+    )
+
+    mock_script = StoryScriptResponse(
+        title="Trường Ca 10 Phút",
+        characters=[
+            StoryCharacter(
+                id="char_minh",
+                name="Minh",
+                concept="Họa sĩ",
+                appearance_prompt="young painter",
+                default_outfit="linen apron",
+                voice_id="vi-VN-NamMinhNeural"
+            )
+        ],
+        scenes=[
+            StoryScene(
+                scene_id=1,
+                narration="Mở màn trường ca anh hùng.",
+                has_character=True,
+                character_id="char_minh",
+                shot_type="medium portrait shot",
+                action_prompt="painting a canvas",
+                environment_prompt="artist studio",
+                camera_motion="zoom_in"
+            )
+        ]
+    )
+
+    def mock_tts(text, voice_name, voice_file):
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=1.0",
+            "-c:a", "libmp3lame", "-ar", "24000", "-ac", "1",
+            str(voice_file)
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    with patch.object(TimeSharedKaggleDirector, "generate_full_10min_story", return_value=mock_script) as mock_gen:
+        final_path = run_story_pipeline(
+            topic="Trường Ca 10 Phút",
+            config=cfg,
+            story_mode="10min_multiact",
+            dry_run=True,
+            tts_backend=mock_tts
+        )
+
+        assert final_path.exists()
+        mock_gen.assert_called_once()
+
