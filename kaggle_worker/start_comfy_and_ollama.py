@@ -138,8 +138,7 @@ def start_comfy_worker(gpu_id: int, port: int):
     cmd = [
         sys.executable, "main.py",
         "--listen", "0.0.0.0",
-        "--port", str(port),
-        "--normalvram"
+        "--port", str(port)
     ]
     return subprocess.Popen(
         cmd,
