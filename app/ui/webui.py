@@ -283,12 +283,18 @@ with tab1:
                     col_img1, col_img2 = st.columns(2)
                     with col_img1:
                         if face_preview_path.exists():
-                            st.image(str(face_preview_path), caption=f"Khuôn mặt: {c_name}", use_container_width=True)
+                            try:
+                                st.image(str(face_preview_path), caption=f"Khuôn mặt: {c_name}", width="stretch")
+                            except TypeError:
+                                st.image(str(face_preview_path), caption=f"Khuôn mặt: {c_name}", use_container_width=True)
                         else:
                             st.info("Chưa có ảnh mặt")
                     with col_img2:
                         if outfit_preview_path.exists():
-                            st.image(str(outfit_preview_path), caption=f"Trang phục: {c_name}", use_container_width=True)
+                            try:
+                                st.image(str(outfit_preview_path), caption=f"Trang phục: {c_name}", width="stretch")
+                            except TypeError:
+                                st.image(str(outfit_preview_path), caption=f"Trang phục: {c_name}", use_container_width=True)
                         else:
                             st.info("Chưa có ảnh trang phục")
 
@@ -357,7 +363,9 @@ with tab1:
                     camera_motion=camera_motion
                 ))
 
-        if st.button("🚀 3. Bắt Đầu Sản Xuất Video (Render)"):
+        is_rendering = st.session_state.get("is_rendering", False)
+        if st.button("🚀 3. Bắt Đầu Sản Xuất Video (Render)", disabled=is_rendering):
+            st.session_state["is_rendering"] = True
             progress_bar = st.progress(0.0)
             status_text = st.empty()
 
@@ -404,6 +412,8 @@ with tab1:
                     )
             except Exception as e:
                 st.error(f"Lỗi trong quá trình render video: {e}")
+            finally:
+                st.session_state["is_rendering"] = False
 
 # --- TAB 2: CHARACTER BIBLE ---
 with tab2:
