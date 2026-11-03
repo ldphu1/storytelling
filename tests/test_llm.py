@@ -66,3 +66,35 @@ def test_generate_story_scenes_with_mocked_llm_response():
         assert len(res.scenes) == 2
         assert res.scenes[0].has_character is False
         assert res.scenes[1].character_id == "char_minh"
+
+def test_generate_story_scenes_provider_routing():
+    mock_resp = MagicMock()
+    mock_resp.json.return_value = {
+        "choices": [{
+            "message": {
+                "content": json.dumps({"title": "Test", "scenes": []})
+            }
+        }]
+    }
+    mock_resp.status_code = 200
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        # 1. Test Gemini auto base_url
+        generate_story_scenes(topic="Test", provider="gemini", api_key="test-key")
+        called_url = mock_post.call_args[0][0]
+        assert "generativelanguage.googleapis.com" in called_url
+
+    with patch("requests.post", return_value=mock_resp) as mock_post:
+        # 2. Test DeepSeek auto base_url
+        generate_story_scenes(topic="Test", provider="deepseek", api_key="test-key")
+        called_url = mock_post.call_args[0][0]
+        assert "api.deepseek.com" in called_url
+
+def test_generate_story_scenes_mock_provider():
+    # Provider "mock" should return without network calls
+    with patch("requests.post") as mock_post:
+        res = generate_story_scenes(topic="Test Mock", provider="mock")
+        assert res.title == "Test Mock"
+        assert len(res.scenes) > 0
+        mock_post.assert_not_called()
+

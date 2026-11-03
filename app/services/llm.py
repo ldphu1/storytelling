@@ -79,6 +79,29 @@ def _extract_json_from_text(text: str) -> Dict[str, Any]:
         text = m.group(1).strip()
     return json.loads(text)
 
+PROVIDER_DEFAULTS = {
+    "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini"
+    },
+    "gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "default_model": "gemini-2.0-flash"
+    },
+    "deepseek": {
+        "base_url": "https://api.deepseek.com/v1",
+        "default_model": "deepseek-chat"
+    },
+    "ollama": {
+        "base_url": "http://localhost:11434/v1",
+        "default_model": "qwen2.5"
+    },
+    "mock": {
+        "base_url": "",
+        "default_model": "mock"
+    }
+}
+
 def generate_story_scenes(
     topic: str,
     character_bible_path: str = "resource/character_bible/characters.json",
@@ -90,19 +113,25 @@ def generate_story_scenes(
 ) -> StoryScriptResponse:
     """Sinh kịch bản phân cảnh chuẩn hóa từ LLM theo Character Bible."""
     cfg = get_config()
-    provider = provider or cfg.llm_provider
+    provider = (provider or cfg.llm_provider).lower()
+    
+    # 1. Chế độ Mock / Thử nghiệm
+    if provider == "mock" or (not api_key and not cfg.llm_api_key and provider != "ollama"):
+        logger.info("Sử dụng kịch bản phân cảnh mẫu (Mock Generator, không gọi API)...")
+        return generate_mock_story_scenes(topic, scene_count=scene_count)
+
+    prov_info = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["openai"])
+    
+    # Tự động gán base_url phù hợp nếu người dùng chưa chỉ định rõ
+    if not base_url or (base_url == "https://api.openai.com/v1" and provider != "openai"):
+        base_url = prov_info["base_url"]
+    
     api_key = api_key or cfg.llm_api_key
-    base_url = base_url or cfg.llm_base_url
-    model = model or cfg.llm_model
+    model = model or prov_info["default_model"]
 
     bible_path = Path(character_bible_path)
     bible = CharacterBible.from_json_file(bible_path)
     available_chars = list(bible.characters.keys())
-
-    # Fallback to mock if no API key provided
-    if not api_key and provider != "ollama":
-        logger.warning("Không tìm thấy API Key cho LLM. Tự động sử dụng mock generator!")
-        return generate_mock_story_scenes(topic, scene_count=scene_count)
 
     system_prompt = f"""
 Bạn là đạo diễn hình ảnh và biên kịch phim hoạt hình AI chuyên nghiệp.
@@ -152,11 +181,29 @@ Trả về duy nhất định dạng JSON khớp với cấu trúc sau:
     }
 
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
-    logger.info(f"Đang gửi yêu cầu sinh kịch bản tới LLM ({provider} / {model})...")
+    logger.info(f"Đang gửi yêu cầu sinh kịch bản tới LLM ({provider} / {model}) tại {endpoint}...")
     
-    resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
-    resp.raise_for_status()
+    try:
+        resp = requests.post(endpoint, json=payload, headers=headers, timeout=60)
+        resp.raise_for_status()
+    except requests.exceptions.HTTPError as http_err:
+        status_code = resp.status_code if resp is not None else 0
+        if status_code == 401:
+            raise RuntimeError(
+                f"Lỗi xác thực (401 Unauthorized) từ nhà cung cấp '{provider.upper()}'.\n"
+                f"- Nếu bạn dùng API Key của Google Gemini, hãy chuyển Nhà cung cấp LLM sang 'gemini'.\n"
+                f"- Nếu bạn dùng API Key của DeepSeek, hãy chuyển sang 'deepseek'.\n"
+                f"- Nếu bạn chưa có API Key hoặc muốn thử nghiệm miễn phí, hãy chọn Nhà cung cấp là 'mock'."
+            ) from http_err
+        elif status_code == 404:
+            raise RuntimeError(
+                f"Endpoint không tìm thấy (404) tại {endpoint}. Kiểm tra lại tên model '{model}' hoặc đường dẫn API."
+            ) from http_err
+        else:
+            raise RuntimeError(f"Lỗi gọi API {provider.upper()} ({status_code}): {resp.text}") from http_err
+    except Exception as e:
+        raise RuntimeError(f"Không thể kết nối tới LLM ({provider.upper()}): {e}") from e
+
     raw_content = resp.json()["choices"][0]["message"]["content"]
-    
     parsed_json = _extract_json_from_text(raw_content)
     return StoryScriptResponse(**parsed_json)

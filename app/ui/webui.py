@@ -53,9 +53,37 @@ with st.sidebar:
         st.info("Đang bật chế độ Dry-Run: Hệ thống sẽ tạo ảnh giả lập và dùng FFmpeg local để kiểm tra luồng video.")
 
     st.subheader("🤖 Cấu hình LLM")
-    llm_provider = st.selectbox("Nhà cung cấp LLM", ["openai", "gemini", "ollama", "deepseek"], index=0)
-    llm_api_key = st.text_input("API Key", value=cfg.llm_api_key, type="password")
-    llm_model = st.text_input("Tên Model", value=cfg.llm_model)
+    provider_options = ["gemini", "openai", "deepseek", "ollama", "mock (thử nghiệm không cần key)"]
+    llm_provider = st.selectbox("Nhà cung cấp LLM", provider_options, index=0)
+    clean_provider = llm_provider.split()[0].lower()
+
+    if clean_provider == "mock":
+        st.info("✨ Chế độ Mock: Tự động tạo kịch bản 5 phân cảnh chuẩn điện ảnh tức thì mà không cần API Key hay kết nối mạng.")
+        llm_api_key = ""
+        llm_model = "mock"
+        llm_base_url = ""
+    else:
+        if clean_provider == "gemini":
+            default_base = "https://generativelanguage.googleapis.com/v1beta/openai"
+            default_model = "gemini-2.0-flash"
+            key_help = "Nhập Google AI Studio API Key (AIzaSy...)"
+        elif clean_provider == "deepseek":
+            default_base = "https://api.deepseek.com/v1"
+            default_model = "deepseek-chat"
+            key_help = "Nhập DeepSeek API Key (sk-...)"
+        elif clean_provider == "ollama":
+            default_base = "http://localhost:11434/v1"
+            default_model = "qwen2.5"
+            key_help = "Ollama chạy local, không cần key"
+        else:
+            default_base = "https://api.openai.com/v1"
+            default_model = "gpt-4o-mini"
+            key_help = "Nhập OpenAI API Key (sk-...)"
+
+        llm_api_key = st.text_input("API Key", value=cfg.llm_api_key, type="password", help=key_help)
+        llm_model = st.text_input("Tên Model", value=default_model)
+        with st.expander("Tùy biến Endpoint (Base URL)"):
+            llm_base_url = st.text_input("Base URL", value=default_base)
 
     st.subheader("🎙️ Giọng Đọc Mặc Định")
     voice_choice = st.selectbox("Giọng Đọc Narrator", [
@@ -73,21 +101,35 @@ with tab1:
     with col_input2:
         scene_count = st.slider("Số phân cảnh:", min_value=3, max_value=8, value=4)
 
-    if st.button("✨ 1. Sinh Kịch Bản Phân Cảnh (LLM)"):
-        with st.spinner("Đang kết nối LLM sinh kịch bản chi tiết..."):
+    col_btn1, col_btn2 = st.columns([2, 1])
+    with col_btn1:
+        btn_gen = st.button("✨ 1. Sinh Kịch Bản Phân Cảnh (LLM)")
+    with col_btn2:
+        btn_mock = st.button("⚡ Sinh Kịch Bản Mẫu (Mock / Không cần Key)")
+
+    if btn_gen or btn_mock:
+        active_prov = "mock" if btn_mock else clean_provider
+        with st.spinner("Đang khởi tạo kịch bản phân cảnh..."):
             try:
                 story_script = generate_story_scenes(
                     topic=topic_input,
                     character_bible_path=str(bible_path),
-                    provider=llm_provider,
+                    provider=active_prov,
                     api_key=llm_api_key,
-                    model=llm_model,
+                    base_url=llm_base_url if not btn_mock else "",
+                    model=llm_model if not btn_mock else "mock",
                     scene_count=scene_count
                 )
                 st.session_state["current_script"] = story_script
                 st.success("Đã sinh kịch bản thành công! Hãy kiểm tra và chỉnh sửa bên dưới.")
             except Exception as e:
                 st.error(f"Lỗi sinh kịch bản: {e}")
+                st.info(
+                    "💡 **Gợi ý khắc phục:**\n"
+                    "- Nếu bạn dùng API Key Google Gemini (bắt đầu bằng `AIzaSy...`), hãy chọn Nhà cung cấp là **'gemini'** ở cột bên trái.\n"
+                    "- Nếu bạn dùng DeepSeek API Key, hãy chọn **'deepseek'**.\n"
+                    "- Nếu bạn chưa có API Key hoặc muốn thử nghiệm ngay, hãy bấm nút **'⚡ Sinh Kịch Bản Mẫu (Mock / Không cần Key)'** ngay phía trên!"
+                )
 
     # Hiển thị kịch bản có thể chỉnh sửa
     if "current_script" in st.session_state:
