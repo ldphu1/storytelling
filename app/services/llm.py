@@ -370,7 +370,7 @@ class TimeSharedKaggleDirector:
             content = m.group(1).strip()
         return content
 
-    def generate_full_10min_script(self, topic: str, checkpoint_dir: Path) -> List[StoryScene]:
+    def generate_full_10min_script(self, topic: str, checkpoint_dir: Path, force_refresh: bool = False) -> List[StoryScene]:
         """
         Điều phối sinh kịch bản 10 phút (~70 phân cảnh) qua 5 Hồi có lưu Checkpoint từng Hồi,
         sau đó tự động xả sạch VRAM trong khối finally.
@@ -378,8 +378,15 @@ class TimeSharedKaggleDirector:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         final_script_file = checkpoint_dir / "full_script_checkpoint.json"
 
-        # Nếu kịch bản đã được sinh thành công ở lần chạy trước thì đọc luôn từ ổ cứng
-        if final_script_file.exists():
+        if force_refresh:
+            for f in checkpoint_dir.glob("*.json"):
+                try:
+                    f.unlink()
+                except Exception:
+                    pass
+
+        # Nếu kịch bản đã được sinh thành công ở lần chạy trước và không yêu cầu làm mới thì đọc từ ổ cứng
+        if not force_refresh and final_script_file.exists():
             logger.info("[Checkpoint] Đã tìm thấy kịch bản hoàn chỉnh trên máy Local, bỏ qua Pha LLM.")
             raw_list = json.loads(final_script_file.read_text(encoding="utf-8"))
             return [StoryScene.model_validate(item) for item in raw_list]
@@ -409,7 +416,11 @@ class TimeSharedKaggleDirector:
             - voice_id: 'vi-VN-NamMinhNeural' (nam) hoặc 'vi-VN-HoaiMyNeural' (nữ)
 
             QUY TẮC THIẾT KẾ 5 HỒI (acts):
-            - Mỗi Hồi phải có location_anchor và lighting_anchor cố định bằng tiếng Anh.
+            - Gồm đúng 5 Hồi: Hồi 1 (Khởi đầu), Hồi 2 (Phát triển), Hồi 3 (Biến cố/Cao trào 1), Hồi 4 (Đỉnh điểm), Hồi 5 (Kết thúc/Đọng lại).
+            - Mỗi Hồi phải có:
+              + location_anchor: không gian/địa điểm cố định bằng tiếng Anh
+              + lighting_anchor: ánh sáng cố định bằng tiếng Anh
+              + target_scenes: từ 12 đến 15 phân cảnh (để tổng 5 Hồi đạt ~65-75 cảnh cho video 10 phút)
             """
             beat_user = f"Chủ đề câu chuyện: {topic}\nNhân vật mẫu nếu cần tham khảo: {char_summary}"
             beat_json = self._call_ollama_structured(beat_sys, beat_user, MasterBeatSheet)
@@ -475,22 +486,20 @@ class TimeSharedKaggleDirector:
             # -----------------------------------------------------------------
             self.evict_llm_from_kaggle_vram()
 
-    def generate_full_10min_story(self, topic: str, checkpoint_dir: Path) -> StoryScriptResponse:
+    def generate_full_10min_story(self, topic: str, checkpoint_dir: Path, force_refresh: bool = False) -> StoryScriptResponse:
         """Sinh StoryScriptResponse hoàn chỉnh sẵn sàng cho pipeline."""
-        scenes = self.generate_full_10min_script(topic, checkpoint_dir)
+        scenes = self.generate_full_10min_script(topic, checkpoint_dir, force_refresh=force_refresh)
         title = topic
-        sheet_file = checkpoint_dir / "master_beat_sheet.json"
-        if sheet_file.exists():
-            try:
-                sheet = MasterBeatSheet.model_validate_json(sheet_file.read_text(encoding="utf-8"))
-                title = sheet.video_title or topic
-            except Exception:
-                pass
         chars = []
         sheet_file = checkpoint_dir / "master_beat_sheet.json"
         if sheet_file.exists():
             try:
                 sheet = MasterBeatSheet.model_validate_json(sheet_file.read_text(encoding="utf-8"))
+                title = sheet.video_title or topic
+                if sheet.characters:
+                    chars = sheet.characters
+            except Exception:
+                pass
                 title = sheet.video_title or topic
                 if sheet.characters:
                     chars = sheet.characters

@@ -118,7 +118,7 @@ with st.sidebar:
             value=default_ollama_base,
             help="Đường link Cloudflare Tunnel tới Ollama port 11434 kèm /v1"
         )
-        llm_model = st.text_input("Tên Model", value="qwen2.5:32b-instruct-q4_K_M" if is_10min_mode else "qwen2.5:7b", help="Model khuyến nghị: qwen2.5:32b-instruct-q4_K_M cho phim 10 phút")
+        llm_model = st.text_input("Tên Model", value="qwen2.5:32b-instruct-q4_K_M", help="Mô hình Qwen-2.5-32B chạy trên Kaggle 2xT4")
     else:
         if clean_provider == "gemini":
             default_base = "https://generativelanguage.googleapis.com/v1beta/openai"
@@ -178,7 +178,8 @@ with tab1:
                     checkpoint_dir = ROOT_DIR / "storage" / "webui_10min_checkpoints"
                     story_script = director.generate_full_10min_story(
                         topic=topic_input,
-                        checkpoint_dir=checkpoint_dir
+                        checkpoint_dir=checkpoint_dir,
+                        force_refresh=True
                     )
                 else:
                     story_script = generate_story_scenes(
