@@ -394,22 +394,37 @@ class TimeSharedKaggleDirector:
             # -----------------------------------------------------------------
             # BƯỚC 1: LẬP ĐỀ CƯƠNG 5 HỒI (MASTER BEAT SHEET)
             # -----------------------------------------------------------------
-            logger.info(f"[Pha 1 - LLM 32B] Đang lập cấu trúc 5 Hồi (Beat Sheet) cho chủ đề: '{topic}'...")
-            beat_sys = (
-                "Bạn là Đạo diễn Điện ảnh AI. Hãy thiết kế cấu trúc kịch bản 10 phút gồm đúng 5 Hồi (Acts). "
-                "Mỗi Hồi phải có một không gian cố định (location_anchor) và ánh sáng cố định (lighting_anchor) bằng tiếng Anh."
-            )
-            beat_user = f"Chủ đề câu chuyện: {topic}\nDanh sách nhân vật: {char_summary}"
+            logger.info(f"[Pha 1 - LLM 32B] Đang lập cấu trúc 5 Hồi (Beat Sheet) và sáng tạo nhân vật cho chủ đề: '{topic}'...")
+            beat_sys = f"""
+            Bạn là Đạo diễn Điện ảnh AI chuyên nghiệp.
+            Nhiệm vụ: Lập cấu trúc kịch bản trường ca 10 phút gồm đúng 5 Hồi (Acts) và sáng tạo 1 đến 2 nhân vật chính (characters) phù hợp nhất với chủ đề: "{topic}".
+
+            QUY TẮC THIẾT KẾ NHÂN VẬT (characters):
+            Sáng tạo 1 đến 2 nhân vật phù hợp với phong cách, bối cảnh thời đại và thể loại của câu chuyện:
+            - id: 'char_1', 'char_2'
+            - name: Tên nhân vật bằng tiếng Việt (ví dụ: 'Lâm Phong', 'Tiêu Dao', 'Mai', 'David'...)
+            - concept: Thể loại & vibe tạo hình (ví dụ: 'Kiếm hiệp lãng tử giang hồ', 'Cyberpunk hacker', 'Học sinh thanh xuân', 'Bác sĩ quân y'...)
+            - appearance_prompt: Prompt tiếng Anh mô tả khuôn mặt, mắt, tóc, nét mặt (KHÔNG mô tả trang phục)
+            - default_outfit: Prompt tiếng Anh mô tả trang phục đặc trưng theo đúng concept/thời đại
+            - voice_id: 'vi-VN-NamMinhNeural' (nam) hoặc 'vi-VN-HoaiMyNeural' (nữ)
+
+            QUY TẮC THIẾT KẾ 5 HỒI (acts):
+            - Mỗi Hồi phải có location_anchor và lighting_anchor cố định bằng tiếng Anh.
+            """
+            beat_user = f"Chủ đề câu chuyện: {topic}\nNhân vật mẫu nếu cần tham khảo: {char_summary}"
             beat_json = self._call_ollama_structured(beat_sys, beat_user, MasterBeatSheet)
             beat_sheet = MasterBeatSheet.model_validate_json(beat_json)
             (checkpoint_dir / "master_beat_sheet.json").write_text(beat_sheet.model_dump_json(indent=2), encoding="utf-8")
-            logger.success(f"Đã tạo xong Beat Sheet: '{beat_sheet.video_title}' ({len(beat_sheet.acts)} Hồi)")
+            logger.success(f"Đã tạo xong Beat Sheet: '{beat_sheet.video_title}' ({len(beat_sheet.acts)} Hồi, {len(beat_sheet.characters)} nhân vật)")
 
             # -----------------------------------------------------------------
             # BƯỚC 2: TRIỂN KHAI CHI TIẾT TỪNG HỒI VỚI ROLLING CONTEXT
             # -----------------------------------------------------------------
             global_scene_counter = 1
-            available_char_keys = list(self.bible.get("characters", {}).keys()) or ["char_1", "char_2"]
+            if beat_sheet.characters:
+                available_char_keys = [c.id for c in beat_sheet.characters]
+            else:
+                available_char_keys = list(self.bible.get("characters", {}).keys()) or ["char_1", "char_2"]
             for act in beat_sheet.acts:
                 act_ckpt = checkpoint_dir / f"act_{act.act_id:02d}_scenes.json"
                 if act_ckpt.exists():
@@ -472,7 +487,16 @@ class TimeSharedKaggleDirector:
             except Exception:
                 pass
         chars = []
-        if "characters" in self.bible:
+        sheet_file = checkpoint_dir / "master_beat_sheet.json"
+        if sheet_file.exists():
+            try:
+                sheet = MasterBeatSheet.model_validate_json(sheet_file.read_text(encoding="utf-8"))
+                title = sheet.video_title or topic
+                if sheet.characters:
+                    chars = sheet.characters
+            except Exception:
+                pass
+        if not chars and "characters" in self.bible:
             for cid, cdata in self.bible["characters"].items():
                 chars.append(
                     StoryCharacter(

@@ -68,6 +68,10 @@ class ActBeat(BaseModel):
 class MasterBeatSheet(BaseModel):
     video_title: str = Field(description="Tiêu đề video chuẩn SEO hấp dẫn")
     overall_synopsis: str = Field(description="Tóm tắt cốt truyện tổng thể")
+    characters: List[StoryCharacter] = Field(
+        default_factory=list,
+        description="Danh sách 1 đến 2 nhân vật chính được thiết kế riêng phù hợp với bối cảnh và concept của câu chuyện"
+    )
     acts: List[ActBeat] = Field(description="Danh sách các Hồi của kịch bản")
 
 class ActScenesBatch(BaseModel):
