@@ -1,6 +1,7 @@
 import json
 import time
 import uuid
+import shutil
 import asyncio
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, List
@@ -109,6 +110,12 @@ def run_story_pipeline(
         for c in story_script.characters:
             face_p = char_dir / f"{c.id}_face.png"
             outfit_p = char_dir / f"{c.id}_outfit.png"
+            # Nếu người dùng đã sinh trước trong WebUI và truyền đường dẫn file
+            if c.face_plate and Path(c.face_plate).exists() and not face_p.exists():
+                shutil.copy(c.face_plate, face_p)
+            if c.outfit_plate and Path(c.outfit_plate).exists() and not outfit_p.exists():
+                shutil.copy(c.outfit_plate, outfit_p)
+
             if not (face_p.exists() and face_p.stat().st_size > 1024 and outfit_p.exists() and outfit_p.stat().st_size > 1024):
                 report(f"Đang sinh ảnh mẫu cho nhân vật {c.name} ({c.concept})...", 0.55)
                 comfy_client.generate_character_plates(c, output_dir=char_dir, dry_run=dry_run)

@@ -19,9 +19,10 @@ if sys.platform.startswith("win"):
         pass
 
 from app.config import get_config, AppConfig
-from app.models.schema import StoryScriptResponse, StoryScene, CharacterBible
+from app.models.schema import StoryScriptResponse, StoryScene, StoryCharacter, CharacterBible
 from app.services.llm import generate_story_scenes
 from app.services.task import run_story_pipeline
+from app.services.comfy_remote_client import DualGPUComfyStoryClient
 
 st.set_page_config(
     page_title="AI Storytelling Studio",
@@ -136,6 +137,98 @@ with tab1:
         script: StoryScriptResponse = st.session_state["current_script"]
         st.subheader(f"📖 Kịch bản: {script.title}")
         
+        # --- BƯỚC 2: DUYỆT & TINH CHỈNH DIỄN VIÊN / CONCEPT ---
+        st.markdown("---")
+        st.markdown("### 🎭 Bước 2: Duyệt & Tinh Chỉnh Diễn Viên (Characters & Concept)")
+        st.caption("Xem trước, tinh chỉnh Concept tạo hình và bấm sinh ảnh mẫu nhân vật trước khi render video hoàn chỉnh.")
+
+        preview_dir = ROOT_DIR / "storage" / "character_previews"
+        preview_dir.mkdir(parents=True, exist_ok=True)
+
+        updated_characters = []
+        chars_to_display = script.characters if script.characters else [
+            StoryCharacter(
+                id="char_1",
+                name="Nhân vật chính",
+                concept="Nhân vật đời thường gần gũi",
+                appearance_prompt="a 22-year-old young handsome Vietnamese man, friendly warm expression",
+                default_outfit="wearing casual clothing and sneakers",
+                voice_id="vi-VN-NamMinhNeural"
+            )
+        ]
+
+        for c_idx, char in enumerate(chars_to_display):
+            with st.expander(f"👤 Diễn viên {c_idx + 1}: **{char.name}** (`{char.id}`) — Concept: *{char.concept}*", expanded=True):
+                col_left, col_right = st.columns([3, 2])
+                with col_left:
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        c_name = st.text_input("Tên nhân vật", value=char.name, key=f"c_name_{c_idx}")
+                        c_id = char.id
+                    with c2:
+                        voice_idx = 0 if "NamMinh" in char.voice_id else 1
+                        c_voice = st.selectbox("Giọng đọc", ["vi-VN-NamMinhNeural", "vi-VN-HoaiMyNeural"], index=voice_idx, key=f"c_voice_{c_idx}")
+                    
+                    c_concept = st.text_input("Concept tạo hình (Vibe / Thể loại phong cách)", value=char.concept, key=f"c_concept_{c_idx}")
+                    c_app = st.text_area("Prompt Ngoại hình (Face/Hair/Features - Tiếng Anh)", value=char.appearance_prompt, key=f"c_app_{c_idx}")
+                    c_outfit = st.text_area("Prompt Trang phục (Outfit/Clothes - Tiếng Anh)", value=char.default_outfit, key=f"c_outfit_{c_idx}")
+
+                with col_right:
+                    face_preview_path = preview_dir / f"{char.id}_face.png"
+                    outfit_preview_path = preview_dir / f"{char.id}_outfit.png"
+                    
+                    btn_gen_plate = st.button(f"🎨 Tạo / Sinh Lại Ảnh Mẫu ({c_name})", key=f"btn_plate_{c_idx}")
+                    if btn_gen_plate:
+                        with st.spinner(f"Đang sinh ảnh mẫu cho {c_name} qua ComfyUI ({clean_provider.upper()})..."):
+                            try:
+                                client = DualGPUComfyStoryClient(worker_urls=active_workers)
+                                temp_char = StoryCharacter(
+                                    id=c_id,
+                                    name=c_name,
+                                    concept=c_concept,
+                                    appearance_prompt=c_app,
+                                    default_outfit=c_outfit,
+                                    voice_id=c_voice
+                                )
+                                client.generate_character_plates(
+                                    character=temp_char,
+                                    output_dir=preview_dir,
+                                    dry_run=dry_run_mode
+                                )
+                                st.success(f"Đã tạo xong ảnh mẫu cho {c_name}!")
+                            except Exception as e:
+                                st.error(f"Lỗi tạo ảnh mẫu: {e}")
+
+                    col_img1, col_img2 = st.columns(2)
+                    with col_img1:
+                        if face_preview_path.exists():
+                            st.image(str(face_preview_path), caption=f"Khuôn mặt: {c_name}", use_container_width=True)
+                        else:
+                            st.info("Chưa có ảnh mặt")
+                    with col_img2:
+                        if outfit_preview_path.exists():
+                            st.image(str(outfit_preview_path), caption=f"Trang phục: {c_name}", use_container_width=True)
+                        else:
+                            st.info("Chưa có ảnh trang phục")
+
+                updated_characters.append(StoryCharacter(
+                    id=c_id,
+                    name=c_name,
+                    concept=c_concept,
+                    appearance_prompt=c_app,
+                    default_outfit=c_outfit,
+                    voice_id=c_voice,
+                    face_plate=str(face_preview_path) if face_preview_path.exists() else None,
+                    outfit_plate=str(outfit_preview_path) if outfit_preview_path.exists() else None,
+                    pulid_weight=char.pulid_weight,
+                    ipadapter_weight=char.ipadapter_weight
+                ))
+
+        # --- BƯỚC 3: DUYỆT PHÂN CẢNH & RENDER VIDEO ---
+        st.markdown("---")
+        st.markdown("### 🎬 Bước 3: Duyệt Phân Cảnh & Sản Xuất Video")
+        
+        available_char_choices = [c.id for c in updated_characters] if updated_characters else list(bible.characters.keys())
         updated_scenes = []
         for idx, sc in enumerate(script.scenes):
             with st.expander(f"Phân cảnh {sc.scene_id}: {sc.narration[:40]}...", expanded=True):
@@ -144,10 +237,11 @@ with tab1:
                     narration = st.text_area(f"Lời dẫn truyện (Cảnh {sc.scene_id})", value=sc.narration, key=f"narr_{idx}")
                 with c2:
                     has_char = st.checkbox("Có nhân vật", value=sc.has_character, key=f"has_char_{idx}")
+                    char_sel_idx = available_char_choices.index(sc.character_id) if sc.character_id in available_char_choices else 0
                     char_id = st.selectbox(
                         "Nhân vật",
-                        list(bible.characters.keys()),
-                        index=0 if sc.character_id == "char_minh" else 1,
+                        available_char_choices,
+                        index=char_sel_idx,
                         key=f"char_id_{idx}",
                         disabled=not has_char
                     )
@@ -182,7 +276,7 @@ with tab1:
                     camera_motion=camera_motion
                 ))
 
-        if st.button("🚀 2. Bắt Đầu Sản Xuất Video (Render)"):
+        if st.button("🚀 3. Bắt Đầu Sản Xuất Video (Render)"):
             progress_bar = st.progress(0.0)
             status_text = st.empty()
 
@@ -199,7 +293,11 @@ with tab1:
                     default_voice=voice_choice
                 )
 
-                final_script = StoryScriptResponse(title=script.title, scenes=updated_scenes)
+                final_script = StoryScriptResponse(
+                    title=script.title,
+                    characters=updated_characters,
+                    scenes=updated_scenes
+                )
                 
                 final_video_path = run_story_pipeline(
                     topic=topic_input,
