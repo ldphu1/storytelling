@@ -64,3 +64,55 @@ def test_run_story_pipeline_dry_run(tmp_path):
     assert len(progress_steps) > 0
     # Final progress should reach 1.0
     assert progress_steps[-1][1] == 1.0
+
+def test_run_story_pipeline_with_dynamic_characters(tmp_path):
+    from app.models.schema import StoryCharacter
+    cfg = AppConfig(
+        storage_dir=tmp_path / "storage",
+        worker_urls=[]
+    )
+    dynamic_char = StoryCharacter(
+        id="char_swordsman",
+        name="Lâm Phong",
+        concept="Kiếm khách giang hồ",
+        appearance_prompt="swordsman portrait",
+        default_outfit="grey robe",
+        voice_id="vi-VN-NamMinhNeural"
+    )
+    custom_script = StoryScriptResponse(
+        title="Kiếm Hiệp Kỳ Ảo",
+        characters=[dynamic_char],
+        scenes=[
+            StoryScene(
+                scene_id=1,
+                narration="Gió lạnh thổi trên đỉnh núi cao.",
+                has_character=True,
+                character_id="char_swordsman",
+                shot_type="medium portrait shot",
+                action_prompt="gripping sword",
+                environment_prompt="mountain peak",
+                camera_motion="zoom_in"
+            )
+        ]
+    )
+
+    def mock_tts(text, voice_name, voice_file):
+        subprocess.run([
+            "ffmpeg", "-y", "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=1.0",
+            "-c:a", "libmp3lame", "-ar", "24000", "-ac", "1",
+            str(voice_file)
+        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+    final_path = run_story_pipeline(
+        topic="Kiếm Hiệp Kỳ Ảo",
+        config=cfg,
+        custom_script=custom_script,
+        dry_run=True,
+        tts_backend=mock_tts
+    )
+    assert final_path.exists()
+    task_dir = final_path.parent
+    char_dir = task_dir / "characters"
+    assert (char_dir / "char_swordsman_face.png").exists()
+    assert (char_dir / "char_swordsman_outfit.png").exists()

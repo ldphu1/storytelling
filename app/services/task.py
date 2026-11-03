@@ -7,7 +7,7 @@ from typing import Optional, Callable, Dict, Any, List
 from loguru import logger
 
 from app.config import AppConfig, get_config
-from app.models.schema import StoryScriptResponse, CharacterBible
+from app.models.schema import StoryScriptResponse, CharacterBible, CharacterProfile
 from app.services.llm import generate_story_scenes
 from app.services.voice import synthesize_scenes_audio_and_subtitles
 from app.services.comfy_remote_client import DualGPUComfyStoryClient
@@ -68,6 +68,19 @@ def run_story_pipeline(
 
     # 2. Âm thanh & Phụ đề
     bible = CharacterBible.from_json_file(Path(character_bible_path))
+    if story_script.characters:
+        for c in story_script.characters:
+            bible.characters[c.id] = CharacterProfile(
+                name=c.name,
+                voice_id=c.voice_id or cfg.default_voice,
+                appearance_trigger=c.appearance_prompt,
+                default_outfit=c.default_outfit,
+                face_plate=c.face_plate or f"{c.id}_face.png",
+                outfit_plate=c.outfit_plate or f"{c.id}_outfit.png",
+                pulid_weight=c.pulid_weight,
+                ipadapter_weight=c.ipadapter_weight
+            )
+
     report("Đang tổng hợp giọng đọc phân cảnh và đồng bộ phụ đề...", 0.35)
     master_audio, master_srt, durations = synthesize_scenes_audio_and_subtitles(
         scenes=story_script.scenes,
@@ -86,6 +99,27 @@ def run_story_pipeline(
         bible_path=character_bible_path
     )
 
+    # Sinh hoặc nạp ảnh mẫu nhân vật động cho task nếu có
+    char_dir = task_dir / "characters"
+    char_dir.mkdir(parents=True, exist_ok=True)
+    custom_plates = {}
+    characters_override = {}
+
+    if story_script.characters:
+        for c in story_script.characters:
+            face_p = char_dir / f"{c.id}_face.png"
+            outfit_p = char_dir / f"{c.id}_outfit.png"
+            if not (face_p.exists() and face_p.stat().st_size > 1024 and outfit_p.exists() and outfit_p.stat().st_size > 1024):
+                report(f"Đang sinh ảnh mẫu cho nhân vật {c.name} ({c.concept})...", 0.55)
+                comfy_client.generate_character_plates(c, output_dir=char_dir, dry_run=dry_run)
+            else:
+                c.face_plate = face_p.name
+                c.outfit_plate = outfit_p.name
+
+            custom_plates[c.face_plate or face_p.name] = face_p
+            custom_plates[c.outfit_plate or outfit_p.name] = outfit_p
+            characters_override[c.id] = c
+
     scenes_dict = [sc.model_dump() for sc in story_script.scenes]
     scene_videos = asyncio.run(
         comfy_client.render_all_scenes_parallel(
@@ -93,7 +127,9 @@ def run_story_pipeline(
             scenes=scenes_dict,
             durations=durations,
             aspect_ratio=aspect_ratio,
-            dry_run=dry_run
+            dry_run=dry_run,
+            characters_override=characters_override,
+            custom_plates=custom_plates
         )
     )
     report(f"Hoàn thành render {len(scene_videos)} clip phân cảnh", 0.85)
