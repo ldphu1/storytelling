@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import uuid
 import time
@@ -15,6 +16,20 @@ from app.config import get_config
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 
 class DualGPUComfyStoryClient:
+    @staticmethod
+    def clean_worker_url(url: str) -> str:
+        """Tự động làm sạch URL nếu người dùng vô tình dán đè URL cũ lẫn mới."""
+        url = url.strip()
+        if not url:
+            return ""
+        m = re.search(r"https?://[a-zA-Z0-9\-\.]+(?:\.trycloudflare\.com|\.ngrok-free\.app|:\d+)", url)
+        if m:
+            return m.group(0).rstrip("/")
+        m_general = re.search(r"https?://[^\s/]+(?::\d+)?", url)
+        if m_general:
+            return m_general.group(0).rstrip("/")
+        return url.rstrip("/")
+
     def __init__(
         self,
         worker_urls: Optional[List[str]] = None,
@@ -22,7 +37,8 @@ class DualGPUComfyStoryClient:
         bible_path: str = "resource/character_bible/characters.json"
     ):
         cfg = get_config()
-        self.worker_urls = [url.rstrip("/") for url in (worker_urls or cfg.worker_urls)]
+        raw_urls = worker_urls or cfg.worker_urls
+        self.worker_urls = [self.clean_worker_url(url) for url in raw_urls if self.clean_worker_url(url)]
         
         wf_p = Path(workflow_path)
         self.workflow_path = wf_p if wf_p.is_absolute() else (ROOT_DIR / wf_p)

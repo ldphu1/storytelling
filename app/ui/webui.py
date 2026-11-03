@@ -47,7 +47,14 @@ with st.sidebar:
     worker_url_0 = st.text_input("Worker GPU 0 (cuda:0, Port 8188)", value=w0_default, placeholder="https://....trycloudflare.com")
     worker_url_1 = st.text_input("Worker GPU 1 (cuda:1, Port 8189)", value=w1_default, placeholder="https://....trycloudflare.com")
     
-    active_workers = [u.strip() for u in [worker_url_0, worker_url_1] if u.strip()]
+    cleaned_w0 = DualGPUComfyStoryClient.clean_worker_url(worker_url_0)
+    cleaned_w1 = DualGPUComfyStoryClient.clean_worker_url(worker_url_1)
+    if worker_url_0.strip() and cleaned_w0 != worker_url_0.strip():
+        st.sidebar.caption(f"🔍 Tự động nhận diện Worker 0: `{cleaned_w0}`")
+    if worker_url_1.strip() and cleaned_w1 != worker_url_1.strip():
+        st.sidebar.caption(f"🔍 Tự động nhận diện Worker 1: `{cleaned_w1}`")
+    
+    active_workers = [u for u in [cleaned_w0, cleaned_w1] if u]
     
     dry_run_mode = st.checkbox("🧪 Chế độ Dry-Run (Không cần GPU Cloud)", value=(len(active_workers) == 0))
     if dry_run_mode:
