@@ -4,3 +4,5 @@ __pycache__/
 storage/
 .superpowers/
 .pytest_cache/
+*.mp3
+!resource/songs/*.mp3
