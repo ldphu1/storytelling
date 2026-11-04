@@ -87,6 +87,9 @@ def run_story_pipeline(
 
     # 2. Âm thanh & Phụ đề
     bible = CharacterBible.from_json_file(Path(character_bible_path))
+    if voice_override:
+        bible.narrator.voice_id = voice_override
+
     if story_script.characters:
         for c in story_script.characters:
             bible.characters[c.id] = CharacterProfile(
@@ -105,7 +108,7 @@ def run_story_pipeline(
         scenes=story_script.scenes,
         task_dir=task_dir,
         bible=bible,
-        voice_override=voice_override,
+        voice_override=None,  # Đặt là None để ưu tiên giọng riêng của từng nhân vật trong bible.characters!
         tts_backend=tts_backend
     )
     report("Hoàn thành audio và phụ đề", 0.50)
@@ -172,6 +175,13 @@ def run_story_pipeline(
 
     # 4. Đóng gói hoàn thiện video cuối cùng
     report("Đang hoàn thiện video (Audio Ducking, NVENC & phụ đề)...", 0.90)
+    if bgm_path is None:
+        songs_dir = cfg.resource_dir / "songs"
+        available_songs = list(songs_dir.glob("*.mp3")) if songs_dir.exists() else []
+        if available_songs:
+            bgm_path = available_songs[0]
+            logger.info(f"Tự động sử dụng nhạc nền BGM: {bgm_path.name}")
+
     final_video_path = task_dir / "final_story.mp4"
     assemble_final_story_video_nvenc(
         scene_video_paths=scene_videos,

@@ -86,10 +86,10 @@ class DualGPUComfyStoryClient:
             "3": {
                 "inputs": {
                     "seed": sd,
-                    "steps": 20,
-                    "cfg": 7.0,
-                    "sampler_name": "euler",
-                    "scheduler": "normal",
+                    "steps": 6,
+                    "cfg": 2.0,
+                    "sampler_name": "dpmpp_sde",
+                    "scheduler": "karras    ",
                     "denoise": 1.0,
                     "model": ["4", 0],
                     "positive": ["6", 0],
